@@ -33,6 +33,18 @@ network_policies:
         access: read-write
         protocol: rest
         enforcement: enforce
+        # The coarse read-write access above does not, in practice, cover
+        # sensitive mutating endpoints — the proxy denies POST /forks and
+        # POST /pulls without an explicit method/path rule, same as the
+        # atlassian-jira provider profile's write allow-list. Add rules
+        # explicitly and narrowly as real needs show up.
+        rules:
+          - allow:
+              method: POST
+              path: /repos/*/*/forks
+          - allow:
+              method: POST
+              path: /repos/*/*/pulls
     binaries:
       - path: /usr/bin/gh
       - path: /usr/bin/git
