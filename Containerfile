@@ -1,5 +1,5 @@
 # ---- Stage 1: binary downloads with SHA256 verification ----
-FROM registry.access.redhat.com/ubi9/ubi:9.8-1789348643 AS builder
+FROM registry.access.redhat.com/ubi9/ubi:9.8-1789461287 AS builder
 
 ARG TARGETARCH
 ARG GH_VERSION=2.58.0
