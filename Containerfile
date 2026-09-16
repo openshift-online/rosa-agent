@@ -61,7 +61,7 @@ RUN set -eux; \
     dnf -y install --nodocs claude-code
 
 # ---- Stage 2: final sandbox image ----
-FROM registry.access.redhat.com/ubi9/ubi:9.8-1789348643
+FROM registry.access.redhat.com/ubi9/ubi:9.8-1789461287
 
 LABEL org.opencontainers.image.title="openshell-sandbox-go" \
       org.opencontainers.image.description="Go operator development sandbox for OpenShell gateway" \
