@@ -48,20 +48,13 @@ sandbox-push: require-sandbox-image sandbox-build
 	@echo "Pushed $(SANDBOX_IMAGE):$(SANDBOX_TAG)"
 
 # ---------------------------------------------------------------------------
-# Konflux scheduled jobs (see README's "Konflux configuration > Scheduled
-# jobs" section). Each CronJob's pod runs `make <job>` with
-# OPENSHELL_OIDC_CLIENT_SECRET injected from Vault as an environment
-# variable. Each job's Make logic — OpenShell gateway registration, OIDC
-# token minting, and the one-shot sandbox create (--no-keep --no-tty) that
-# runs the matching skill — lives in sandbox/skills/<job>.mk, next to that
-# job's skill, and is pulled in below via `include` to keep it logically
-# separate from the generic build/lint targets above.
+# Scheduled jobs
+#
+# The sop-improve CronJob is deployed directly to the rosaeng cluster
+# (not via Konflux) because Konflux build clusters cannot reach the
+# Hypershell OIDC endpoint. The CronJob manifest lives at
+# sandbox/skills/job-sop-improve/job-sop-improve-cron.yaml and contains
+# the full inline script (gateway registration, OIDC token mint, sandbox
+# create). Apply it manually with `oc apply -f` plus the openshell-oidc
+# secret.
 # ---------------------------------------------------------------------------
-
-include sandbox/skills/job-sop-improve.mk
-
-# NOTE: there is no `sdlc-maturity` skill in this repo yet, so there is
-# intentionally no `sdlc-maturity` target here even though the `sdlc-maturity`
-# Konflux CronJob documented in the README calls `make sdlc-maturity`. Add
-# one, following the `sop-improve` pattern (sandbox/skills/job-sop-improve.mk),
-# once that skill exists under sandbox/skills/. See openshift-online/rosa-agent#1.
