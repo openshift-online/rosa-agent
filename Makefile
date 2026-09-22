@@ -11,7 +11,7 @@ SANDBOX_TAG ?= $(shell git rev-parse --short=7 HEAD)
 SANDBOX_CONTAINERFILE := Containerfile
 SANDBOX_CONTEXT := .
 
-.PHONY: lint markdown-lint sandbox-build sandbox-push require-sandbox-image
+.PHONY: lint markdown-lint test sandbox-build sandbox-push require-sandbox-image
 
 # Parent lint target: runs every linter. The OpenShift CI `ci/prow/lint`
 # presubmit runs `make lint`. Add new linters (shell, yaml, ...) as their own
@@ -22,6 +22,27 @@ lint: markdown-lint
 # Rules live in .markdownlint-cli2.yaml.
 markdown-lint:
 	markdownlint-cli2 "**/*.md"
+
+# Run every skill's Python unit tests, then any bundled shell-script tests.
+# Stdlib unittest only - this image has no pip, so no pytest/coverage
+# tooling is available or expected. Each skill's own directory is put on
+# sys.path (via unittest's -t), matching how `python3 -m <package>` already
+# resolves imports for that skill. Shell-script tests (no bats/shunit2 in
+# this image) are plain executable scripts under scripts/tests/ that report
+# their own pass/fail and exit non-zero on failure.
+test:
+	@set -e; for d in sandbox/skills/*/; do \
+		if compgen -G "$${d}tests/test_*.py" > /dev/null; then \
+			echo "=== $$d ==="; \
+			(cd "$$d" && python3 -m unittest discover -s tests -t .); \
+		fi; \
+		if compgen -G "$${d}scripts/tests/test_*.sh" > /dev/null; then \
+			for t in "$$d"scripts/tests/test_*.sh; do \
+				echo "=== $$t ==="; \
+				bash "$$t"; \
+			done; \
+		fi; \
+	done
 
 # Local build tag when no image is given, so `make sandbox-build` works without
 # a registry. A push always requires SANDBOX_IMAGE (see require-sandbox-image).

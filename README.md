@@ -43,6 +43,16 @@ baked-in skill that scopes the work. Job skills live under `sandbox/skills/`.
     Any failure that stops the job opens an Issue against this repo (`openshift-online/rosa-agent`).
     This job is scheduled as a Konflux cron job in the `rosa-tenant` tenant.
 
+* **`job-image-vuln-check`** (`sandbox/skills/job-image-vuln-check/SKILL.md`) — checks a given
+    quay.io image for fixable CVEs and remediates them via PR. Retrieval wraps the
+    `quay-vuln-report` skill (never reimplemented); the image and its source GitHub repo are always
+    given explicitly to the job (or resolved from the image's OCI labels via `skopeo inspect`) —
+    nothing is hardcoded to this repo's own image. For each fixable CVE it locates the version pin,
+    verifies a real fix exists (never downgrading), runs the repo's tests before and after the bump,
+    and opens a fix-only PR — a second, separate PR follows only if new test coverage was needed.
+    Any failure opens an Issue against this repo. Deployed directly to the `rosa-agent-stage`
+    namespace (see `job-image-vuln-check-cron.yaml`), nightly.
+
 ## Hypershell Gateway
   
   <https://hypershell.apps.rosa.hcmais01ue1.s9m2.p3.openshiftapps.com/gateways/3I94YwZezpdI4AEzuxtJnsVYGVt>
