@@ -83,6 +83,12 @@ profile composes its own endpoints with two-writes-only (comment + remotelink) m
 enforcement; a coarse read-write block here would union over and defeat that restriction. Attach
 the Jira provider to grant Jira access rather than adding it to the policy. WDYT?
 
+Note: PagerDuty egress is intentionally **not** in this baked policy either, for the same reason.
+The `pagerduty` provider profile composes its own read-only incidents/alerts + notes-write-only
+allow-list; PagerDuty's API has no separate scope for "notes write" vs. "incident write", so that
+split only exists at this profile's L7 rules — a coarse block here would defeat it just as surely.
+Attach the pagerduty provider to grant PagerDuty access rather than adding it to the policy.
+
 ### Provider Profiles
 
 Provider profiles are custom OpenShell provider definitions that declare how a credential is
@@ -94,7 +100,7 @@ openshell provider profile lint -f provider-profiles/<profile>.yaml
 openshell provider profile import -f provider-profiles/<profile>.yaml
 ```
 
-Currently there is one profile:
+Currently there are two profiles:
 
 * **`atlassian-jira.yaml`** — Jira Cloud access for sandboxed agents, with a deliberately narrow
     allow-list:
@@ -113,6 +119,10 @@ Currently there is one profile:
       an opaque, proxy-resolved placeholder inside the sandbox. `JIRA_EMAIL` and `JIRA_BASE_URL` are
       **not** secrets and must be passed as plain `--env` values at sandbox creation time (custom
       profiles have no mechanism to expose `--config` values as sandbox env vars).
+* **`pagerduty.yaml`** — PagerDuty access for sandboxed agents: read-only incidents/alerts, plus
+    read/write incident notes. See the [PagerDuty](#pagerduty) section below for the full scope and
+    why the read/write split is enforced entirely by this profile's allow-list rather than by
+    PagerDuty itself.
 
 ### HyperShell Service Account
 
@@ -359,6 +369,41 @@ Note: Sandboxes must be run with the Config keys as `ENV` variables.  There is n
   --provider rosa-agent-jira \
   --env JIRA_EMAIL="sd-sre-platform+rosa-agent@redhat.com" \                                                          
   --env JIRA_BASE_URL="https://redhat.atlassian.net"      
+```
+
+## PagerDuty
+
+Grants sandboxed agents read-only access to PagerDuty incidents and alerts, plus read/write access
+to incident notes — e.g. to triage an active incident and leave a note with findings, without being
+able to resolve, reassign, or otherwise mutate the incident itself.
+
+PagerDuty's REST API v2 has no separate scope for "notes write" — a credential capable of writing
+notes is, at the PagerDuty-authorization layer, also capable of general incident mutation
+(`incidents.write` covers both). The read-only/notes-write split this integration actually enforces
+lives entirely in the [`pagerduty` provider profile](#provider-profiles)'s method/path allow-list
+(`provider-profiles/pagerduty.yaml`), the same way the Jira profile enforces its own write scope —
+see the [Policies](#policies) note above.
+
+Hypershell Provider config:
+
+```bash
+export PAGERDUTY_API_TOKEN=$(vault kv get -mount=osd-sre -field="pagerduty-token" rosa-agent)
+openshell provider create --name "rosa-agent-pagerduty" \
+  --type pagerduty \
+  --credential PAGERDUTY_API_TOKEN
+```
+
+Note: The `pagerduty` Provider Profile is a custom profile, defined in this repo at
+`provider-profiles/pagerduty.yaml`. See the [Provider Profiles](#provider-profiles) section for a
+summary of what it allows and how to import it.
+
+Note: PagerDuty requires a `From: <requester-email>` header on note writes, to attribute the note to
+a real PagerDuty user. Like `JIRA_EMAIL`/`JIRA_BASE_URL`, that email is not a secret and is not
+handled by the provider — it must be passed as a plain `ENV` variable when the sandbox is run:
+
+```bash
+  --provider rosa-agent-pagerduty \
+  --env PAGERDUTY_FROM_EMAIL="sd-sre-platform+rosa-agent@redhat.com"
 ```
 
 ## Vertex
