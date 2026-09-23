@@ -160,6 +160,14 @@ network_policies:
   # that restriction (a PUT/issue-edit would reach Jira instead of being denied
   # at the proxy). Attach the jira provider to grant Jira access; do not add it
   # here.
+  # NOTE: PagerDuty egress is intentionally NOT in this baked policy, for the
+  # same reason as Jira above. The `pagerduty` provider profile
+  # (provider-profiles/pagerduty.yaml) composes its own read-only
+  # incidents/alerts + notes-write-only method/path enforcement; PagerDuty's
+  # API has no separate scope for "notes write" vs. "incident write", so that
+  # narrowing only exists at this profile's L7 allow-list. A coarse block here
+  # would union over and defeat it. Attach the pagerduty provider to grant
+  # PagerDuty access; do not add it here.
   gitlab_cee:
     name: gitlab-cee
     endpoints:
