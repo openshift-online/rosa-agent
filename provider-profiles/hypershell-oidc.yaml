@@ -1,0 +1,124 @@
+# Custom OpenShell provider profile: HyperShell self-service OIDC
+#
+# *** DRAFT — NOT FOR MERGE WITHOUT TEAM REVIEW OF THE BLAST RADIUS ***
+#
+# This profile lets a rosa-agent sandbox mint its own HyperShell/OpenShell
+# OIDC access token and talk to the gateway directly — i.e. the sandbox
+# becomes an `openshell` CLI client of its own gateway, able to run
+# `openshell sandbox create` (and whatever else the underlying service
+# account's role permits) from inside itself. That is a real capability
+# change — an agent that can create more agents using its own credentials —
+# and deserves explicit team sign-off on the blast radius before this
+# merges. See the PR description for the specific questions this raises.
+#
+# Scope:
+#   The OIDC client-credentials secret (OPENSHELL_OIDC_CLIENT_SECRET) is
+#   bound ONLY to the token endpoint on the documented Keycloak issuer
+#   (POST .../protocol/openid-connect/token) — nowhere else on that host.
+#
+#   The HyperShell gateway host itself is granted broad (access: read-write)
+#   rather than method/path-narrowed, because the openshell CLI's
+#   control-plane traffic to a gateway is not a plain documented REST API
+#   with enumerable paths the way Jira/PagerDuty are — it also involves an
+#   SSH tunnel (ProxyCommand=/usr/local/bin/openshell) for sandbox
+#   exec/connect, even non-interactively (see this README's "Troubleshooting
+#   Service Account Issues" section). I could not responsibly author
+#   per-path write narrowing for that traffic without gateway-team input on
+#   its actual wire shape.
+#
+#   What the resulting OIDC token can actually DO once minted (create
+#   sandboxes vs. broader admin actions) is controlled server-side by
+#   Keycloak / the gateway's role binding for this service account
+#   (openshell-user / openshell-admin — see this README's "HyperShell
+#   Service Account" section), NOT by this file. This profile only opens
+#   the sandbox-side network/credential path to an identity that is already
+#   provisioned elsewhere; it does not grant any new authorization itself.
+#
+# Import:
+#   openshell provider profile lint -f provider-profiles/hypershell-oidc.yaml
+#   openshell provider profile import -f provider-profiles/hypershell-oidc.yaml
+#
+# Create the provider. OPENSHELL_OIDC_CLIENT_SECRET is the only real secret
+# this profile manages — it becomes an opaque, proxy-resolved placeholder
+# inside the sandbox (openshell:resolve:env:*), never a plaintext value:
+#   openshell provider create --name rosa-agent-hypershell-oidc \
+#       --type hypershell-oidc \
+#       --credential OPENSHELL_OIDC_CLIENT_SECRET
+#
+# The client id, OIDC issuer, and gateway endpoint below are NOT secrets —
+# they're exactly the values already documented in this README's
+# "HyperShell Service Account" section — but, like JIRA_EMAIL/
+# JIRA_BASE_URL, they are not handled by this profile. Pass them as plain
+# --env values (or pre-seed ~/.config/openshell/gateways/<name>/
+# metadata.json in the sandbox, as this README's "Service account config"
+# section describes) at sandbox creation time:
+#   openshell sandbox create --provider rosa-agent-hypershell-oidc \
+#       --env OPENSHELL_OIDC_CLIENT_ID="hs-sa-<...>" \
+#       --env OPENSHELL_OIDC_ISSUER="https://keycloak-ambient-keycloak.apps.rosa.hcmais01ue1.s9m2.p3.openshiftapps.com/realms/ambient-code" \
+#       --env OPENSHELL_GATEWAY_ENDPOINT="https://gw-openshell-46b2dff2b7232948.openshell.stage.devshift.net:443" \
+#       -- claude
+#
+# Inside the sandbox, the agent runs the `openshell` CLI exactly as
+# documented in this README's "Refreshing your gateway token" section —
+# e.g. `openshell -g <gateway_name> sandbox create ...` — with
+# OPENSHELL_OIDC_CLIENT_SECRET already set to the resolved placeholder.
+# Setting that env var alone makes the OpenShell CLI use the OAuth2
+# client_credentials grant instead of any browser flow — this is native,
+# documented upstream CLI behavior (NVIDIA/OpenShell
+# crates/openshell-cli/src/oidc_auth.rs, commands/gateway.rs), not anything
+# custom to this profile.
+#
+# NOTE FOR REVIEWERS on `request_body_credential_rewrite` below: the OAuth2
+# client_credentials grant submits the client secret as a `client_secret`
+# form field in the POST body, not a header — unlike every other credential
+# in this repo's provider profiles so far. `request_body_credential_rewrite`
+# is a real field name I found in the sandbox-policy schema reference
+# (docs/reference/policy-schema.mdx) for exactly this kind of body-embedded
+# secret substitution, but I have not verified it's valid on a
+# *provider-profile* endpoint (as opposed to a sandbox-policy endpoint) —
+# please confirm against the live schema before merging, and adjust the
+# credential's `auth_style`/this endpoint's fields if it isn't.
+id: hypershell-oidc
+display_name: HyperShell Self-Service OIDC
+description: Lets a sandboxed agent mint its own HyperShell/OpenShell OIDC access token and act as an openshell client against the gateway (e.g. to create its own child sandboxes)
+category: infrastructure
+credentials:
+- name: oidc_client_secret
+  description: OAuth2 client_credentials secret for the HyperShell/OpenShell OIDC service account (Vault osd-sre/rosa-agent[-konflux], field hypershell-oidc-client-secret)
+  env_vars:
+  - OPENSHELL_OIDC_CLIENT_SECRET
+  required: true
+discovery:
+  credentials:
+  - oidc_client_secret
+endpoints:
+# Keycloak OIDC issuer — token minting only. Narrowed to exactly the one
+# documented token endpoint; nothing else on this host is reachable.
+- host: keycloak-ambient-keycloak.apps.rosa.hcmais01ue1.s9m2.p3.openshiftapps.com
+  port: 443
+  protocol: rest
+  enforcement: enforce
+  request_body_credential_rewrite: true
+  rules:
+  - allow:
+      method: POST
+      path: /realms/ambient-code/protocol/openid-connect/token
+# HyperShell gateway control-plane host. NOT method/path-narrowed — see the
+# header comment above for why. access: read-write because sandbox creation
+# is a write operation.
+- host: gw-openshell-46b2dff2b7232948.openshell.stage.devshift.net
+  port: 443
+  access: read-write
+  protocol: rest
+  enforcement: enforce
+binaries:
+# /usr/local/bin/openshell is this repo's actual install path (see
+# Containerfile), which differs from the /usr/bin/openshell path this
+# README's own "Troubleshooting Service Account Issues" section mentions —
+# noting the discrepancy here rather than silently picking one.
+- /usr/local/bin/openshell
+# openssh-clients (installed in the Containerfile) is required: the README
+# notes openshell uses ssh with ProxyCommand=/usr/local/bin/openshell to
+# reach a sandbox after creation, even non-interactively (--no-tty).
+- /usr/bin/ssh
+inference_capable: false

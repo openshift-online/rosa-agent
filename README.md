@@ -83,6 +83,11 @@ profile composes its own endpoints with two-writes-only (comment + remotelink) m
 enforcement; a coarse read-write block here would union over and defeat that restriction. Attach
 the Jira provider to grant Jira access rather than adding it to the policy. WDYT?
 
+Note: HyperShell gateway/OIDC egress is intentionally **not** in this baked policy either — it's
+credential-gated behind the `hypershell-oidc` provider profile (**DRAFT, pending team review** —
+see [Self-Service Sandbox Creation](#self-service-sandbox-creation) below), for the same
+union-over-and-defeat reason as Jira.
+
 ### Provider Profiles
 
 Provider profiles are custom OpenShell provider definitions that declare how a credential is
@@ -113,6 +118,9 @@ Currently there is one profile:
       an opaque, proxy-resolved placeholder inside the sandbox. `JIRA_EMAIL` and `JIRA_BASE_URL` are
       **not** secrets and must be passed as plain `--env` values at sandbox creation time (custom
       profiles have no mechanism to expose `--config` values as sandbox env vars).
+
+**DRAFT, pending team review:** a second profile, `hypershell-oidc.yaml`, is proposed in an open
+draft PR — see [Self-Service Sandbox Creation](#self-service-sandbox-creation) below.
 
 ### HyperShell Service Account
 
@@ -290,6 +298,58 @@ It reads config (issuer, client id) from the gateway's `metadata.json`, so no
 flags beyond `-g` are needed for a gateway registered as above. Run
 `hack/refresh_openshell_token.py --help` for the full flag list (Vault
 mount/path/field overrides, `--no-browser`, `--no-vault-login`, etc.).
+
+### Self-Service Sandbox Creation
+
+**Status: DRAFT proposal, open PR, not merged — needs team discussion of the blast radius before
+this ships.**
+
+Everything above describes rosa-agent sandboxes as things a gateway creates. The
+`hypershell-oidc` provider profile (`provider-profiles/hypershell-oidc.yaml`) proposes the reverse:
+letting a rosa-agent sandbox mint its own OIDC access token (via
+`OPENSHELL_OIDC_CLIENT_SECRET`/`client_credentials`, exactly as `hack/refresh_openshell_token.py`
+does above) and act as an `openshell` CLI client of the same gateway itself — e.g. so a sandbox
+handling a task can spin up its own child sandbox for a sub-task, instead of that always having to
+happen from outside.
+
+This is a real capability change — an agent that can create more agents using its own credentials —
+so it's proposed as a draft, not something to merge unreviewed. A few things worth discussing before
+it does:
+
+* What the resulting token can actually do (create sandboxes vs. broader admin actions) is entirely
+  a function of the OIDC service account's existing role binding (`openshell-user`/
+  `openshell-admin`), not anything this profile controls — the profile only opens the sandbox-side
+  network/credential path to an identity that's already provisioned. Should self-service sandboxes
+  use a role scoped down from what the outer/bootstrapping identity has?
+* The gateway host itself is granted broad (`access: read-write`), not method/path-narrowed like
+  Jira/PagerDuty, because its traffic isn't a plain documented REST API — see the profile file's own
+  header comment for why, and for what would need gateway-team input to narrow further.
+* No limit is proposed here on sandbox count, image source, or recursion depth for
+  self-service-created sandboxes — that would need to come from the gateway/role side, not this
+  profile.
+
+Hypershell Provider config:
+
+```bash
+openshell provider create --name rosa-agent-hypershell-oidc \
+  --type hypershell-oidc \
+  --credential OPENSHELL_OIDC_CLIENT_SECRET
+```
+
+Note: The `hypershell-oidc` Provider Profile is a custom profile, defined in this repo at
+`provider-profiles/hypershell-oidc.yaml`. See the [Provider Profiles](#provider-profiles) section
+for a summary of what it allows and how to import it.
+
+Note: `OPENSHELL_OIDC_CLIENT_ID`, `OPENSHELL_OIDC_ISSUER`, and `OPENSHELL_GATEWAY_ENDPOINT` are not
+secrets and are not handled by this provider — like `JIRA_EMAIL`/`JIRA_BASE_URL`, pass them as plain
+`ENV` variables when the sandbox is run:
+
+```bash
+  --provider rosa-agent-hypershell-oidc \
+  --env OPENSHELL_OIDC_CLIENT_ID="hs-sa-<...>" \
+  --env OPENSHELL_OIDC_ISSUER="https://keycloak-ambient-keycloak.apps.rosa.hcmais01ue1.s9m2.p3.openshiftapps.com/realms/ambient-code" \
+  --env OPENSHELL_GATEWAY_ENDPOINT="https://gw-openshell-46b2dff2b7232948.openshell.stage.devshift.net:443"
+```
 
 ## Github
 
