@@ -160,6 +160,14 @@ network_policies:
   # that restriction (a PUT/issue-edit would reach Jira instead of being denied
   # at the proxy). Attach the jira provider to grant Jira access; do not add it
   # here.
+  # NOTE: HyperShell gateway/OIDC egress (keycloak-ambient-keycloak..., the
+  # gw-openshell-... gateway host) is intentionally NOT in this baked policy.
+  # It is credential-gated behind the hypershell-oidc provider profile
+  # (provider-profiles/hypershell-oidc.yaml, DRAFT pending team review), which
+  # narrows OPENSHELL_OIDC_CLIENT_SECRET to exactly the OIDC token endpoint.
+  # A coarse block here would grant that egress to every sandbox regardless
+  # of whether it holds the credential. Attach the hypershell-oidc provider
+  # to grant this access; do not add it here.
   gitlab_cee:
     name: gitlab-cee
     endpoints:
