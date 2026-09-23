@@ -222,6 +222,23 @@ network_policies:
       - path: /usr/bin/curl
       - path: /usr/bin/skopeo
       - path: /usr/bin/claude
+  # quay.io's blob storage backend redirects config-blob fetches (used by
+  # `skopeo inspect` to read OCI labels such as org.opencontainers.image.source)
+  # to S3. Read-only, mirrors the quay_registry shape above. Only the
+  # us-east-1 redirect target has been observed; other regions/buckets may
+  # need to be added if quay.io's backend changes. See ROSAENG-67603.
+  s3_blob_storage:
+    name: s3-blob-storage
+    endpoints:
+      - host: s3.us-east-1.amazonaws.com
+        port: 443
+        access: read-only
+        protocol: rest
+        enforcement: enforce
+    binaries:
+      - path: /usr/bin/curl
+      - path: /usr/bin/skopeo
+      - path: /usr/bin/claude
   # Go module proxy, checksum verification, and package documentation
   go_modules:
     name: go-modules
