@@ -173,42 +173,31 @@ For a stale-but-not-obsolete SOP:
    `/sop-improve` is not present in the clone, stop and report it — do not
    substitute your own editing logic.
 
-3. **Push the feature branch to your fork, then open and label the PR using
-   the `github-labels` skill's deterministic script.** Do NOT use
-   `gh pr create --label` or `gh pr edit --add-label` — both resolve the
-   label through an internal GraphQL lookup, which the sandbox's GraphQL
-   block denies regardless of REST permissions, so they fail every time
-   regardless of whether the label exists:
+3. **Push the feature branch to your fork, then open the PR with a plain,
+   REST-safe `gh pr create`.** Labeling the PR is NOT required — do not
+   invoke the `github-labels` skill or `open-labeled-pr.sh` for this job.
+   Automated work is distinguishable by its author account and by the PR
+   body's `🤖` attribution line below, not by a label, so this step never
+   depends on the injected account having triage/admin access on
+   `$UPSTREAM`:
 
    ```shell
    git push origin "sop-improve/<short-sop-slug>"
 
-   PR_NUMBER="$(FORK_OWNER="<your-account>" \
-     UPSTREAM="$UPSTREAM" \
-     BRANCH="sop-improve/<short-sop-slug>" \
-     TITLE="Improve SOP: <path/to/sop.md>" \
-     BODY="Automated improvement of a stale SOP (last updated <date>),
+   gh pr create --repo "$UPSTREAM" \
+     --head "<your-account>:sop-improve/<short-sop-slug>" \
+     --base "$DEFAULT_BRANCH" \
+     --title "Improve SOP: <path/to/sop.md>" \
+     --body "Automated improvement of a stale SOP (last updated <date>),
    selected at random by the SOP grooming job and improved via this repo's
    /sop-improve skill.
 
-   🤖 Opened by the automated job-sop-improve run." \
-     bash /sandbox/.claude/skills/github-labels/open-labeled-pr.sh)"
+   🤖 Opened by the automated job-sop-improve run."
    ```
 
-   This discovers `$UPSTREAM`'s default branch, opens the PR, creates the
-   `ROSA-Agent` label on `$UPSTREAM` if it doesn't exist yet, and attaches
-   it — all via REST. The PR MUST carry the `ROSA-Agent` label so automated
-   work is distinguishable from human contributions.
-
-   `open-labeled-pr.sh` needs the injected account to have at least
-   **triage** access on `$UPSTREAM` for label creation/attachment to
-   succeed — if that's missing, it fails with a GitHub `403` and files its
-   own failure Issue against `openshift-online/rosa-agent` (see that
-   skill's *On failure* section); do not treat that as a proxy problem to
-   debug, ask for triage access on `$UPSTREAM` instead. On any failure from
-   this step, `open-labeled-pr.sh` has already filed the failure Issue
-   itself — do not also file a second one from the *On any failure* section
-   below for this specific step.
+   `gh pr create` is REST-safe (see the `github` skill) and needs no more
+   than normal fork-and-PR permissions — it does not require triage/admin
+   access on `$UPSTREAM`.
 
 ## On any failure or error: open an Issue against this job's repo
 
@@ -218,9 +207,7 @@ a way that stops the job — the fork fast-forward fails / diverges, a required
 `gh`/`git` command errors, `/sop-improve` is missing or fails, a request is
 policy-denied (HTTP 403), or anything else prevents a clean completion —
 open a GitHub **Issue against this job's own repository,
-`openshift-online/rosa-agent`**, describing what happened. (The exception is
-the PR-open-and-label step: `open-labeled-pr.sh` already files its own
-failure Issue for that step — see above — so don't duplicate it here.)
+`openshift-online/rosa-agent`**, describing what happened.
 
 ```shell
 gh issue create --repo "openshift-online/rosa-agent" \
