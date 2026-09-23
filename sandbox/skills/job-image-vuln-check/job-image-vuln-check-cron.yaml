@@ -1,0 +1,183 @@
+# Temporarily deployed directly to cluster rather than via Konflux.
+# Konflux build clusters cannot reach the OIDC endpoint for Hypershell,
+# so this CronJob is applied manually until that connectivity is resolved.
+# See sandbox/skills/job-sop-improve/job-sop-improve-cron.yaml for the
+# sibling job this manifest mirrors.
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: rosa-agent-bot-1
+  namespace: rosa-agent-stage
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: rosa-agent-bot-1
+  namespace: rosa-agent-stage
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames: ["openshell-oidc"]
+    verbs: ["get"]
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: rosa-agent-bot-1
+  namespace: rosa-agent-stage
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: rosa-agent-bot-1
+subjects:
+  - kind: ServiceAccount
+    name: rosa-agent-bot-1
+    namespace: rosa-agent-stage
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: image-vuln-check
+  namespace: rosa-agent-stage
+spec:
+  schedule: "7 3 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      activeDeadlineSeconds: 3600
+      backoffLimit: 0
+      template:
+        spec:
+          serviceAccountName: rosa-agent-bot-1
+          containers:
+            - name: image-vuln-check
+              image: quay.io/redhat-services-prod/rosa-tenant/rosa-agent/rosa-agent:latest
+              imagePullPolicy: Always
+              command:
+                - /bin/bash
+                - -c
+              args:
+                - |
+                  set -euo pipefail
+
+                  echo "=== Step 1: Register the OpenShell gateway ==="
+                  GW_DIR="${HOME}/.config/openshell/gateways/${GW_NAME}"
+                  echo "GW_DIR=${GW_DIR}"
+                  mkdir -p "${GW_DIR}"
+                  cat > "${GW_DIR}/metadata.json" <<GWEOF
+                  {
+                    "name": "${GW_NAME}",
+                    "gateway_endpoint": "${GW_ENDPOINT}",
+                    "is_remote": true,
+                    "gateway_port": 0,
+                    "auth_mode": "oidc",
+                    "oidc_issuer": "${OIDC_ISSUER}",
+                    "oidc_client_id": "${OIDC_CLIENT_ID}",
+                    "oidc_audience": "${OIDC_AUDIENCE}"
+                  }
+                  GWEOF
+                  chmod 600 "${GW_DIR}/metadata.json"
+                  echo "Gateway metadata written"
+                  cat "${GW_DIR}/metadata.json"
+
+                  echo "=== Step 2: Test DNS resolution ==="
+                  OIDC_HOST=$(echo "${OIDC_ISSUER}" | sed 's|https://||' | sed 's|/.*||')
+                  echo "Resolving ${OIDC_HOST}..."
+                  getent hosts "${OIDC_HOST}" || echo "DNS resolution FAILED for ${OIDC_HOST}"
+
+                  GW_HOST=$(echo "${GW_ENDPOINT}" | sed 's|https://||' | sed 's|:.*||')
+                  echo "Resolving ${GW_HOST}..."
+                  getent hosts "${GW_HOST}" || echo "DNS resolution FAILED for ${GW_HOST}"
+
+                  echo "=== Step 3: Mint OIDC access token ==="
+                  echo "Posting to: ${OIDC_ISSUER}/protocol/openid-connect/token"
+                  printf '%s' "${OPENSHELL_OIDC_CLIENT_SECRET}" | \
+                    curl --fail --silent --show-error --connect-timeout 15 --max-time 30 \
+                      --request POST "${OIDC_ISSUER}/protocol/openid-connect/token" \
+                      --header 'Content-Type: application/x-www-form-urlencoded' \
+                      --data-urlencode 'grant_type=client_credentials' \
+                      --data-urlencode "client_id=${OIDC_CLIENT_ID}" \
+                      --data-urlencode 'client_secret@-' | \
+                    python3 -c "
+                  import json, os, sys
+                  token = json.load(sys.stdin)['access_token']
+                  path = os.path.join('${GW_DIR}', 'oidc_token.json')
+                  with open(path, 'w') as f:
+                      json.dump({
+                          'access_token': token,
+                          'issuer': '${OIDC_ISSUER}',
+                          'client_id': '${OIDC_CLIENT_ID}',
+                      }, f)
+                  os.chmod(path, 0o600)
+                  print('token minted successfully', file=sys.stderr)
+                  "
+                  echo "Token file written"
+
+                  echo "=== Step 4: Verify authentication ==="
+                  openshell -g "${GW_NAME}" whoami
+
+                  echo "=== Step 5: Clean up stale sandbox ==="
+                  openshell -g "${GW_NAME}" sandbox delete "${NAME}" || true
+
+                  echo "=== Step 6: Create and run sandbox ==="
+                  openshell -g "${GW_NAME}" sandbox create \
+                    --name "${NAME}" \
+                    --from "${IMAGE}" \
+                    --provider rosa-agent-github \
+                    --provider rosa-agent-jira \
+                    --provider rosa-general-vertex \
+                    --env ANTHROPIC_API_KEY=unused \
+                    --env ANTHROPIC_BASE_URL=https://inference.local \
+                    --env JIRA_EMAIL="${JIRA_EMAIL}" \
+                    --env JIRA_BASE_URL="${JIRA_BASE_URL}" \
+                    --no-keep \
+                    --no-tty \
+                    -- claude --dangerously-skip-permissions --print "${PROMPT}"
+              env:
+                - name: HOME
+                  value: /tmp
+                - name: GW_NAME
+                  value: "ROSA Agentic Devx-rosa-agent"
+                - name: GW_ENDPOINT
+                  value: "https://gw-openshell-46b2dff2b7232948.openshell.stage.devshift.net:443"
+                - name: OIDC_ISSUER
+                  value: "https://keycloak-ambient-keycloak.apps.rosa.hcmais01ue1.s9m2.p3.openshiftapps.com/realms/ambient-code"
+                - name: OIDC_CLIENT_ID
+                  value: "hs-sa-3I94YwZezpdI4AEzuxtJnsVYGVt-3J3ccZA4F2wyrrGaIHorqtywaiL"
+                - name: OIDC_AUDIENCE
+                  value: "ROSA Agentic Devx-3I94YwZezpdI4AEzuxtJnsVYGVt"
+                - name: NAME
+                  value: image-vuln-check
+                - name: PROMPT
+                  # No hardcoded image/repo in the skill itself - this is where
+                  # this deployment's target is pinned (see job-image-vuln-check's
+                  # SKILL.md: "Never hardcode an image or repo").
+                  value: >-
+                    /job-image-vuln-check
+                    --image quay.io/redhat-services-prod/rosa-tenant/rosa-agent/rosa-agent:latest
+                    --repository openshift-online/rosa-agent
+                - name: IMAGE
+                  value: "quay.io/redhat-services-prod/rosa-tenant/rosa-agent/rosa-agent:latest"
+                - name: JIRA_EMAIL
+                  value: "sd-sre-platform+rosa-agent@redhat.com"
+                - name: JIRA_BASE_URL
+                  value: "https://redhat.atlassian.net"
+                - name: OPENSHELL_OIDC_CLIENT_SECRET
+                  valueFrom:
+                    secretKeyRef:
+                      name: openshell-oidc
+                      key: OPENSHELL_OIDC_CLIENT_SECRET
+              resources:
+                limits:
+                  cpu: "2"
+                  memory: 2Gi
+                requests:
+                  cpu: 500m
+                  memory: 512Mi
+          restartPolicy: Never
