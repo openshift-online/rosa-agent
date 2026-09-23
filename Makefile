@@ -71,11 +71,12 @@ sandbox-push: require-sandbox-image sandbox-build
 # ---------------------------------------------------------------------------
 # Scheduled jobs
 #
-# The sop-improve CronJob is deployed directly to the rosaeng cluster
-# (not via Konflux) because Konflux build clusters cannot reach the
-# Hypershell OIDC endpoint. The CronJob manifest lives at
-# sandbox/skills/job-sop-improve/job-sop-improve-cron.yaml and contains
-# the full inline script (gateway registration, OIDC token mint, sandbox
-# create). Apply it manually with `oc apply -f` plus the openshell-oidc
-# secret.
+# The sop-improve and ops-sop-pr-review CronJobs are deployed directly to
+# the rosaeng cluster (not via Konflux) because Konflux build clusters
+# cannot reach the Hypershell OIDC endpoint. Each CronJob's manifest lives
+# alongside its job skill and contains the full inline script (gateway
+# registration, OIDC token mint, sandbox create):
+#   sandbox/skills/job-sop-improve/job-sop-improve-cron.yaml
+#   sandbox/skills/job-ops-sop-pr-review/job-ops-sop-pr-review-cron.yaml
+# Apply each manually with `oc apply -f` plus the openshell-oidc secret.
 # ---------------------------------------------------------------------------

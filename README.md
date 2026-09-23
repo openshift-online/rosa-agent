@@ -53,6 +53,19 @@ baked-in skill that scopes the work. Job skills live under `sandbox/skills/`.
     Any failure opens an Issue against this repo. Deployed directly to the `rosa-agent-stage`
     namespace (see `job-image-vuln-check-cron.yaml`), nightly.
 
+* **`job-ops-sop-pr-review`** (`sandbox/skills/job-ops-sop-pr-review/SKILL.md`) — critically
+    reviews every open PR on [openshift/ops-sop](https://github.com/openshift/ops-sop) older than
+    two weeks. It applies that repo's own `sop-improve` skill's Section 5 ("Verify referenced
+    tools and operators") to check any referenced commands/tools against real upstream source, and
+    reads existing PR comments/reviews as context so it credits rather than repeats prior reviewer
+    concerns. It posts one approve/do-not-approve recommendation comment per PR, plus a separate
+    ping comment for a `needs-rebase` label (to the author), a `do-not-merge/hold` label (to
+    whoever applied it), or a PR over 3 months old (to the author and active reviewers, warning of
+    closure in a week). It never edits, merges, or labels a PR, and never reviews
+    `work-in-progress/hold` PRs or PRs it authored itself. Any failure opens an Issue against this
+    repo. Deployed directly to the `rosa-agent-stage` namespace (see
+    `job-ops-sop-pr-review-cron.yaml`), weekly on Fridays at 22:00 UTC (12:00 HST).
+
 ## Hypershell Gateway
   
   <https://hypershell.apps.rosa.hcmais01ue1.s9m2.p3.openshiftapps.com/gateways/3I94YwZezpdI4AEzuxtJnsVYGVt>
