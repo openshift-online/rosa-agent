@@ -92,6 +92,9 @@ write_fake_gh() {
 printf '%s\n' "$*" >> "$GH_LOG"
 
 case "$*" in
+  "auth setup-git")
+    exit 0
+    ;;
   "api repos/"*"--jq .default_branch"*)
     if [ "${FAKE_GH_FAIL_DEFAULT_BRANCH:-0}" = "1" ]; then
       echo "simulated: could not look up default branch" >&2
@@ -178,6 +181,7 @@ test_sync_fork_fast_forwards_and_pushes() {
   assert_eq "$(git_rev "$upstream" main)" "$(git_rev "$work" main)" "local checkout is fast-forwarded to upstream's tip"
   assert_eq "$(git_rev "$upstream" main)" "$(git_rev "$fork" main)" "the fork remote itself was pushed to upstream's tip"
   assert_contains "$(cat "$GH_LOG")" "--jq .default_branch" "looked up the default branch via the API, not a hardcoded 'main'"
+  assert_contains "$(cat "$GH_LOG")" "auth setup-git" "wired git's credential helper before pushing (regression: plain git push otherwise fails with 'could not read Username')"
   assert_eq "" "$(grep -F "issues " "$GH_LOG" || true)" "no failure Issue filed on a clean sync"
 
   teardown_sandbox

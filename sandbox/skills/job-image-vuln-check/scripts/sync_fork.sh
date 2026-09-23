@@ -28,6 +28,13 @@ source "$SCRIPT_DIR/common.sh"
 : "${UPSTREAM:?set UPSTREAM (owner/repo to sync from)}"
 : "${DIR:=${FORK##*/}}"
 
+# Wire git's credential helper to gh's already-established token-based auth.
+# Without this, plain `git push` fails with "could not read Username" even
+# though `gh` itself is authenticated - gh does not configure this
+# automatically just by having GITHUB_TOKEN set. Idempotent and
+# non-interactive (unlike `gh auth login`, which AGENTS.md forbids).
+gh auth setup-git >&2
+
 DEFAULT_BRANCH="$(gh api "repos/$UPSTREAM" --jq '.default_branch')"
 
 if [ ! -d "$DIR/.git" ]; then
