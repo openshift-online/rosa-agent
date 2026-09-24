@@ -27,7 +27,10 @@ DESCRIPTION = (
     "exact pre-templated ping comment body for whichever of needs-rebase / "
     "stale(>90d) / failing-CI conditions apply (bundled into one comment "
     "per PR), and a separate do-not-merge/hold re-review ping naming "
-    "whoever applied that label."
+    "whoever applied that label. A 3-week recomment cooldown suppresses "
+    "`post_main_review` and any ping this job already posted unchanged "
+    "since its last run, unless a new commit or new human discussion "
+    "makes it worth repeating."
 )
 
 

@@ -12,13 +12,23 @@ from __future__ import annotations
 
 from typing import List, Optional
 
+from .recomment_guard import AUTHOR_PING_MARKER, HOLD_PING_MARKER
+
+# Each footer ends with a hidden HTML-comment marker (invisible when
+# rendered) identifying this exact comment as "this job's author ping" /
+# "this job's hold ping" - see recomment_guard - so a later run can find its
+# own most recent ping of each kind and compare it against the freshly
+# computed one instead of blindly reposting every run.
 _FOOTER = (
     "\n\n---\n*Automated ping from the scheduled `job-ops-sop-pr-review` job "
     "(all applicable author notices are consolidated into this single "
-    "comment to avoid notification-storming).*"
+    "comment to avoid notification-storming).*\n" + AUTHOR_PING_MARKER
 )
 
-_HOLD_FOOTER = "\n\n---\n*Automated ping from the scheduled `job-ops-sop-pr-review` job.*"
+_HOLD_FOOTER = (
+    "\n\n---\n*Automated ping from the scheduled `job-ops-sop-pr-review` job.*\n"
+    + HOLD_PING_MARKER
+)
 
 
 def build_consolidated_author_ping(

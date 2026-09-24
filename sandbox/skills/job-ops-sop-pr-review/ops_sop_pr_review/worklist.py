@@ -8,7 +8,7 @@ prior-discussion synthesis on top of what's already been fetched here.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from .ci_status import failing_contexts
@@ -26,6 +26,7 @@ from .pr_filter import (
     is_stale,
     pr_author,
 )
+from .recomment_guard import AUTHOR_PING_MARKER, HOLD_PING_MARKER, should_skip_main_review, should_skip_ping
 
 
 @dataclass
@@ -44,6 +45,8 @@ class PRWorkItem:
     hold_label_adder: Optional[str]
     consolidated_author_ping: Optional[str]
     hold_ping: Optional[str]
+    head_sha: str = ""
+    post_main_review: bool = True
     error: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
@@ -62,6 +65,8 @@ class PRWorkItem:
             "hold_label_adder": self.hold_label_adder,
             "consolidated_author_ping": self.consolidated_author_ping,
             "hold_ping": self.hold_ping,
+            "head_sha": self.head_sha,
+            "post_main_review": self.post_main_review,
             "error": self.error,
         }
 
@@ -82,6 +87,8 @@ def _skipped_item(pr: Dict[str, Any], reason: str, now: Optional[datetime]) -> P
         hold_label_adder=None,
         consolidated_author_ping=None,
         hold_ping=None,
+        head_sha="",
+        post_main_review=False,
     )
 
 
@@ -101,6 +108,8 @@ def _error_item(pr: Dict[str, Any], error: str, now: Optional[datetime]) -> PRWo
         hold_label_adder=None,
         consolidated_author_ping=None,
         hold_ping=None,
+        head_sha="",
+        post_main_review=False,
         error=error,
     )
 
@@ -119,6 +128,7 @@ def build_work_item(
     if not eligibility.eligible:
         return _skipped_item(pr_summary, eligibility.reason, now)
 
+    resolved_now = now or datetime.now(timezone.utc)
     number = pr_summary["number"]
     # The list endpoint omits mergeable_state/head detail; fetch the full
     # resource now that we know this PR is actually going to be reviewed.
@@ -159,6 +169,21 @@ def build_work_item(
     )
     hold_ping = build_hold_ping(hold_adder) if hold_adder else None
 
+    # Recomment cooldown: don't repeat a comment this job already posted
+    # within the last 3 weeks unless something material changed since then
+    # (a new commit for the review, or different wording for a ping).
+    if consolidated is not None and should_skip_ping(
+        issue_comments, self_login, AUTHOR_PING_MARKER, consolidated, resolved_now
+    ):
+        consolidated = None
+    if hold_ping is not None and should_skip_ping(
+        issue_comments, self_login, HOLD_PING_MARKER, hold_ping, resolved_now
+    ):
+        hold_ping = None
+    post_main_review = not should_skip_main_review(
+        issue_comments, reviews, review_comments, self_login, ref, resolved_now
+    )
+
     return PRWorkItem(
         number=number,
         title=pr.get("title", ""),
@@ -174,6 +199,8 @@ def build_work_item(
         hold_label_adder=hold_adder,
         consolidated_author_ping=consolidated,
         hold_ping=hold_ping,
+        head_sha=ref,
+        post_main_review=post_main_review,
     )
 
 

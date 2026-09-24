@@ -45,7 +45,36 @@ This returns a JSON array, one object per **currently open** PR, each with:
 `number`, `title`, `html_url`, `author`, `age_days`, `eligible`,
 `skip_reason`, `needs_rebase`, `stale`, `stale_reviewer_logins`,
 `failing_checks`, `hold_label_adder`, `consolidated_author_ping`,
-`hold_ping`, `error`.
+`hold_ping`, `head_sha`, `post_main_review`, `error`.
+
+### Recomment cooldown - already baked into these fields, don't second-guess it
+
+To avoid notification-storming a PR that just sits open week after week, the
+worklist builder itself checks whether this job already posted a given
+comment within the last 3 weeks and, if so, whether anything material has
+changed since (a new commit, or a substantive human comment/review from
+someone else) - see `ops_sop_pr_review/recomment_guard.py`, fully covered by
+hermetic tests. Concretely:
+
+- `post_main_review: false` means this job already reviewed this exact
+  `head_sha` within the last 3 weeks and nobody else has weighed in since -
+  **skip Step 3 entirely for this PR this run.** `post_main_review: true`
+  (the default) means go ahead.
+- `consolidated_author_ping` / `hold_ping` are already `null`ed out by this
+  same cooldown when the identical ping was already posted within the last
+  3 weeks - you don't need a separate check for that; `null` already means
+  "don't post" exactly as it does for "nothing applies".
+
+This only works because every comment this job posts carries a hidden
+marker the next run can find - **never strip these markers**, they're
+invisible in rendered Markdown:
+
+- the main review comment's template (Step 3) MUST end with
+  `<!-- job-ops-sop-pr-review:review head_sha={head_sha} -->`, substituting
+  this item's `head_sha` verbatim;
+- the ping bodies already have their marker baked in by
+  `consolidated_author_ping`/`hold_ping` - post them unmodified (Step 4
+  already tells you this) and the marker comes along for free.
 
 - `eligible: false` with `skip_reason` one of `self_authored`,
   `work_in_progress_hold`, or `too_new` - **skip entirely, no comments of
@@ -79,6 +108,11 @@ Use this to:
   request to wait on another reviewer, a dependency-PR note).
 
 ## Step 3: Apply sop-improve Section 5 and post the main review comment
+
+If this item's `post_main_review` is `false`, **skip this entire step** -
+the recomment cooldown already determined this exact commit was reviewed
+within the last 3 weeks with no material change since. Still evaluate
+Step 4 for this PR (pings have their own independent cooldown).
 
 Load the **current** `.claude/skills/sop-improve/SKILL.md` from
 `openshift/ops-sop` at run time (never vendor/cache a copy - it may have
@@ -130,7 +164,12 @@ Structure:
 *Posted by an automated PR review pass per the openshift/ops-sop sop-improve
 skill's Section 5 ("Verify referenced tools and operators") methodology,
 cross-referenced with existing review discussion on this PR.*
+<!-- job-ops-sop-pr-review:review head_sha={head_sha} -->
 ```
+
+Substitute this item's actual `head_sha` value into the marker - it's how
+the next run knows whether this exact commit was already reviewed. Do not
+omit it and do not alter its format.
 
 ## Step 4: Post the precomputed pings, unmodified
 
@@ -198,5 +237,9 @@ all, is **NOT** a failure - do not file an Issue for that.
 - Never fabricate source verification - say so explicitly if a source is
   unreachable rather than guessing.
 - Never split the consolidated author ping into multiple comments.
+- Never strip a comment's hidden `<!-- job-ops-sop-pr-review:... -->` marker
+  and never post over `post_main_review: false` or a `null` ping "just to be
+  safe" - the recomment cooldown exists specifically to stop this job from
+  notification-storming a PR that hasn't changed.
 - File at most one failure Issue per run, and only for a real technical
   problem - not for "nothing to review."
