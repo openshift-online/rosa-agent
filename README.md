@@ -103,7 +103,8 @@ It defines two things:
   * **Go tooling** — read-only to `proxy.golang.org`, `sum.golang.org`, and `pkg.go.dev`.
   * **Container registry** — read-only to `quay.io` (Quay API for image manifest/vulnerability
       data via `curl`, and the registry v2 API for manifest/tag/label inspection via `skopeo`;
-      no image pulls or pushes).
+      no image pulls or pushes), and to `s3.us-east-1.amazonaws.com` (quay.io's blob-storage
+      backend redirects config-blob fetches here, needed for `skopeo inspect` to read OCI labels).
   * **Reference / CI** — read-only to Red Hat docs, Konflux, Codecov, and Prow.
 
 Note: Jira egress is intentionally **not** in this baked policy. The `atlassian-jira` provider
