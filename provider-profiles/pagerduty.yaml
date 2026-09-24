@@ -2,92 +2,136 @@
 #
 # Scope:
 #   Read  — incidents (list + by id), the incident activity/audit trail
-#           (log entries), per-incident alerts, and single alerts by id.
-#   Write — incident notes only: GET/POST /incidents/{id}/notes. Notes are
-#           PagerDuty's only append-only, no-side-effect write endpoint —
-#           there is no PUT/DELETE for notes.
+#           (log entries), and per-incident alerts (list + single alert by
+#           id). There is no account-wide GET /alerts in the PagerDuty API.
+#   Write — incident notes only: GET/POST /incidents/{id}/notes. PagerDuty
+#           DOES have PUT/DELETE /incidents/{id}/notes/{note_id} ("Update a
+#           note", "Delete a note") — this profile deliberately excludes
+#           both; it grants create only, not update/delete.
 #   Not included: creating, acknowledging, resolving, reassigning, or
 #   merging incidents; managing alerts; escalation policies; schedules;
 #   services; users; or any other write. PagerDuty's REST API v2 has no
-#   separate scope for "notes write" — the `incidents.write` scope (or a
-#   full-access API key) covers notes AND incident mutation, so the
-#   credential behind this profile is capable of more than notes at the
-#   PagerDuty-authorization layer. The read-only-incidents/read-write-notes
-#   split this profile actually delivers is enforced entirely by the
-#   allow-list below, not by PagerDuty itself. Widen it only for a real,
-#   specific need — never with a catch-all POST/PUT/PATCH, since that's
-#   where real damage is possible.
+#   separate scope for "notes write" — the `incidents.write` scope covers
+#   notes AND incident mutation, so the credential behind this profile is
+#   capable of more than notes at the PagerDuty-authorization layer. The
+#   read-only-incidents/read-write-notes split this profile actually
+#   delivers is enforced entirely by the allow-list below, not by PagerDuty
+#   itself. Widen it only for a real, specific need — never with a
+#   catch-all POST/PUT/PATCH, since that's where real damage is possible.
 #
 # Import:
 #   openshell provider profile lint -f provider-profiles/pagerduty.yaml
 #   openshell provider profile import -f provider-profiles/pagerduty.yaml
 #
-# Create the provider. PAGERDUTY_API_TOKEN is the only real secret this
-# profile manages — it becomes an opaque, proxy-resolved placeholder inside
-# the sandbox (openshell:resolve:env:*), never a plaintext value:
-#   openshell provider create --name rosa-agent-pagerduty \
-#       --type pagerduty \
-#       --credential PAGERDUTY_API_TOKEN
+# Authorization: PagerDuty's REST API v2 has no scheme the sandbox proxy can
+# rewrite from a plain env-var placeholder. It only accepts
+# `Authorization: Token token=<api-key>` for classic API keys, and
+# SecretResolver::rewrite_header_value (openshell-core) splits header values
+# on the FIRST whitespace only — for "Token token=$PAGERDUTY_API_TOKEN" that
+# produces prefix "Token" and candidate "token=openshell:resolve:env:...",
+# which is not a resolvable placeholder shape (the literal "token=" defeats
+# both the plain-placeholder and the alias-prefix path, since alias prefixes
+# may only contain [A-Za-z0-9_.~-]). The request is rejected before it ever
+# reaches PagerDuty. A static API-key credential CANNOT work with this
+# profile's header shape — do not add one back.
 #
-# PagerDuty's REST API v2 uses a non-standard Authorization scheme —
-# `Authorization: Token token=<value>` (not `Bearer <value>`) — plus a
-# mandatory `Accept: application/vnd.pagerduty+json;version=2` header on
-# every call. Writes (note creation) additionally require a `From:
+# Instead this profile uses PagerDuty's Scoped OAuth client-credentials
+# grant, whose tokens ARE sent as a plain `Authorization: Bearer <token>` —
+# exactly the shape rewrite_header_value's prefix/split path supports — and
+# lets the gateway mint and refresh the token itself via
+# `refresh.strategy: oauth2_client_credentials`. Setup:
+#
+#   1. In PagerDuty: Developer Mode / App Registration, create (or reuse) an
+#      app with Scoped OAuth access to Incidents (read + write), and note
+#      its Client ID / Client Secret plus your account's region (us/eu) and
+#      subdomain (the `<subdomain>` in `https://<subdomain>.pagerduty.com`).
+#   2. Create the provider (no bare secret is passed here — refresh material
+#      is configured separately in step 3):
+#        openshell provider create --name rosa-agent-pagerduty --type pagerduty
+#   3. Configure the refresh material so the gateway can mint tokens itself:
+#        openshell provider refresh configure rosa-agent-pagerduty \
+#            --credential-key PAGERDUTY_ACCESS_TOKEN \
+#            --strategy oauth2-client-credentials \
+#            --material client_id="$PD_CLIENT_ID" \
+#            --material client_secret="$PD_CLIENT_SECRET" \
+#            --secret-material-key client_secret
+#      (CLI flags are kebab-case; the YAML `strategy` below is snake_case —
+#      same value, different casing convention.)
+#   4. Edit the `scopes` list below: replace `as_account-us.CHANGEME` with
+#      your actual `as_account-<region>.<subdomain>` (e.g.
+#      `as_account-us.acme-corp`) BEFORE importing this profile. PagerDuty
+#      requires this account-identifying scope alongside the resource
+#      scopes on every client-credentials token request.
+#
+# PagerDuty additionally requires a mandatory
+# `Accept: application/vnd.pagerduty+json;version=2` header on every call,
+# and note creation (POST .../notes) additionally requires a `From:
 # <requester-email>` header identifying a real PagerDuty user for
-# attribution. Like JIRA_EMAIL/JIRA_BASE_URL in the Jira profile, that
-# email is NOT a secret and is NOT handled by this profile — pass it as a
-# plain --env value at sandbox creation time (custom profiles have no
-# mechanism to expose --config values as sandbox env vars):
+# attribution (the spec marks it required on that write, not on reads).
+# Like JIRA_EMAIL/JIRA_BASE_URL in the Jira profile, that email is NOT a
+# secret and is NOT handled by this profile — pass it as a plain --env value
+# at sandbox creation time (custom profiles have no mechanism to expose
+# --config values as sandbox env vars):
 #   openshell sandbox create --provider rosa-agent-pagerduty \
 #       --env PAGERDUTY_FROM_EMAIL=you@yourcompany.com \
 #       -- claude
 #
-# Inside the sandbox the agent sees PAGERDUTY_API_TOKEN set to an opaque
-# openshell:resolve:env:* placeholder and builds the header exactly like a
-# real token, prefix and all:
+# Inside the sandbox the agent sees PAGERDUTY_ACCESS_TOKEN set to an opaque
+# openshell:resolve:env:* placeholder, gateway-refreshed and never plaintext:
 #
-#   curl -H "Authorization: Token token=$PAGERDUTY_API_TOKEN" \
+#   curl -H "Authorization: Bearer $PAGERDUTY_ACCESS_TOKEN" \
 #        -H "Accept: application/vnd.pagerduty+json;version=2" \
 #        -H "From: $PAGERDUTY_FROM_EMAIL" \
 #        -X POST "https://api.pagerduty.com/incidents/$INCIDENT_ID/notes" \
 #        -d '{"note":{"content":"..."}}'
 #
-# NOTE FOR REVIEWERS: I could not verify against a live gateway whether
-# `auth_style: header` does plain substring substitution inside whatever
-# text surrounds the placeholder in that header (which is what's assumed
-# here, and what the Anthropic/OpenAI built-in profiles' raw
-# `x-api-key`/`authorization` usage implies), or whether it expects the
-# full header value to be exactly the secret — the way this same file's
-# sibling, `atlassian-jira.yaml`, describes `auth_style: basic` explicitly
-# decoding/rewriting/re-encoding the Basic-auth value. Please confirm
-# against the OpenShell provider-profile schema/gateway before merging; if
-# `header` substitution needs an exact-value match, this will need a
-# different mechanism to accommodate the "Token token=" prefix.
+# See sandbox/skills/pagerduty/SKILL.md for the in-sandbox agent's cheat
+# sheet on these headers.
 id: pagerduty
 display_name: PagerDuty
 description: Read-only PagerDuty incidents/alerts, plus read/write incident notes, for sandboxed agents
 category: data
 credentials:
-- name: api_token
-  description: PagerDuty REST API v2 token (used as "Authorization: Token token=<value>")
+- name: access_token
+  description: >-
+    PagerDuty Scoped OAuth access token, minted and refreshed by the gateway
+    via oauth2_client_credentials (used as "Authorization: Bearer <value>").
+    Not a raw PagerDuty API key.
   env_vars:
-  - PAGERDUTY_API_TOKEN
+  - PAGERDUTY_ACCESS_TOKEN
   required: true
-  auth_style: header
+  auth_style: bearer
   header_name: Authorization
+  refresh:
+    strategy: oauth2_client_credentials
+    token_url: https://identity.pagerduty.com/oauth/token
+    scopes:
+    - as_account-us.CHANGEME
+    - incidents.read
+    - incidents.write
+    refresh_before: "300s"
+    material:
+    - name: client_id
+      description: PagerDuty Scoped OAuth app Client ID
+      required: true
+      secret: false
+    - name: client_secret
+      description: PagerDuty Scoped OAuth app Client Secret
+      required: true
+      secret: true
 discovery:
   credentials:
-  - api_token
+  - access_token
 endpoints:
 - host: api.pagerduty.com
   port: 443
   protocol: rest
   enforcement: enforce
   rules:
-  # Reads: incidents (list + by id), the incident activity/audit trail,
-  # per-incident alerts, and single alerts by id. There is no account-wide
-  # GET /alerts in the PagerDuty API — only per-incident listing and
-  # single-alert-by-id exist.
+  # Reads: incidents (list + by id), the incident activity/audit trail, and
+  # per-incident alerts (list + single alert by id). There is no
+  # account-wide GET /alerts in the PagerDuty API — only per-incident
+  # listing and single-alert-by-id, both nested under /incidents/*.
   - allow:
       method: GET
       path: /incidents
@@ -102,15 +146,22 @@ endpoints:
       path: /incidents/*/alerts
   - allow:
       method: GET
-      path: /alerts/*
-  # Notes: the only write this profile grants. Read + append-only create;
-  # no update/delete exists in the PagerDuty API for notes.
+      path: /incidents/*/alerts/*
+  # Notes: the only write this profile grants. Read + append-only create.
+  # PUT/DELETE .../notes/{note_id} exist in the PagerDuty API and are
+  # deliberately NOT allow-listed here.
   - allow:
       method: GET
       path: /incidents/*/notes
   - allow:
       method: POST
       path: /incidents/*/notes
+# PagerDuty mints/refreshes OAuth tokens at identity.pagerduty.com, but the
+# sandbox never talks to it directly — the gateway performs the
+# client_credentials exchange itself on the provider's behalf, using the
+# refresh material configured in step 3 above. No endpoint rule is needed
+# for it here (same reasoning as Jira's api.atlassian.com vs. the sandbox
+# never hitting Atlassian's own token-refresh infra directly).
 binaries:
 - /usr/bin/curl
 - /usr/local/bin/curl

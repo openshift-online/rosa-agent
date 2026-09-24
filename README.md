@@ -384,18 +384,42 @@ lives entirely in the [`pagerduty` provider profile](#provider-profiles)'s metho
 (`provider-profiles/pagerduty.yaml`), the same way the Jira profile enforces its own write scope —
 see the [Policies](#policies) note above.
 
+Auth note: unlike Jira, this profile does **not** use a static API key. PagerDuty's classic
+`Authorization: Token token=<key>` scheme can't be resolved by the sandbox proxy's placeholder
+rewriter (it splits header values on the first whitespace, and `token=<placeholder>` isn't a
+resolvable shape — see the comment at the top of `pagerduty.yaml` for the full explanation). Instead
+the profile uses PagerDuty's Scoped OAuth client-credentials grant, which the gateway mints and
+refreshes itself and sends as a plain `Authorization: Bearer <token>`.
+
 Hypershell Provider config:
 
 ```bash
-export PAGERDUTY_API_TOKEN=$(vault kv get -mount=osd-sre -field="pagerduty-token" rosa-agent)
-openshell provider create --name "rosa-agent-pagerduty" \
-  --type pagerduty \
-  --credential PAGERDUTY_API_TOKEN
+openshell provider create --name "rosa-agent-pagerduty" --type pagerduty
+
+# Register (or reuse) a Scoped OAuth app in PagerDuty first (Developer Mode /
+# App Registration, with Incidents read+write access) to get these values:
+export PD_CLIENT_ID=$(vault kv get -mount=osd-sre -field="pagerduty-oauth-client-id" rosa-agent)
+export PD_CLIENT_SECRET=$(vault kv get -mount=osd-sre -field="pagerduty-oauth-client-secret" rosa-agent)
+openshell provider refresh configure rosa-agent-pagerduty \
+  --credential-key PAGERDUTY_ACCESS_TOKEN \
+  --strategy oauth2-client-credentials \
+  --material client_id="$PD_CLIENT_ID" \
+  --material client_secret="$PD_CLIENT_SECRET" \
+  --secret-material-key client_secret
 ```
 
 Note: The `pagerduty` Provider Profile is a custom profile, defined in this repo at
-`provider-profiles/pagerduty.yaml`. See the [Provider Profiles](#provider-profiles) section for a
-summary of what it allows and how to import it.
+`provider-profiles/pagerduty.yaml`. Before importing it, edit its `scopes` list to replace
+`as_account-us.CHANGEME` with your actual `as_account-<region>.<subdomain>` value — PagerDuty
+requires this account-identifying scope on every client-credentials token request. See the
+[Provider Profiles](#provider-profiles) section for a summary of what the profile allows and how to
+import it.
+
+Note: A custom `pagerduty` sandbox skill (`sandbox/skills/pagerduty/SKILL.md`) is baked into the
+image alongside the `jira` skill (see the [Jira](#jira) section below). It teaches the sandbox agent
+the two headers every PagerDuty call needs (`Authorization: Bearer`, not `Token token=`; the
+mandatory `Accept: application/vnd.pagerduty+json;version=2` version header), that `From` is
+required only on note creation, and which operations the profile above actually permits.
 
 Note: PagerDuty requires a `From: <requester-email>` header on note writes, to attribute the note to
 a real PagerDuty user. Like `JIRA_EMAIL`/`JIRA_BASE_URL`, that email is not a secret and is not
