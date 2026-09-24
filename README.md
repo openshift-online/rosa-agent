@@ -4,7 +4,7 @@
 
 ROSA-Agent is a HyperShell gateway and a collection of service accounts and provider credentials for automating ROSA agentic tasks, including recurring scheduled repository maintenance, automated feature implementation and human-interactive sessions. It is owned and maintained by the [ROSA Agentic DevX](https://github.com/openshift-online/rosa-agentic-devx) team.
 
-* Scheduled jobs are Konflux cron jobs in the `rosa-tenant`
+* Scheduled jobs are plain `batch/v1` CronJobs applied directly to the `rosa-agent-stage` namespace (see [Scheduled jobs](#scheduled-jobs))
 * Automated feature implementation are one-shot, non-interactive ("Read this Jira and implement it")
 
 ## Open Questions
@@ -13,7 +13,7 @@ What triggers are available?
 
 Currently:
 
-* Konflux cron jobs with a HyperShell Service Account credentials
+* Plain `batch/v1` CronJobs (applied directly to the cluster, not via Konflux) using HyperShell Service Account credentials
 * Human interactive and non-interactive with OpenShell CLI
 
 Future:
@@ -30,8 +30,10 @@ Future consideations should include perhaps a non-Golang/language Boilerplate [o
 
 ## Jobs
 
-Jobs are non-interactive, scheduled tasks the agent runs (typically as Konflux cron jobs) using a
-baked-in skill that scopes the work. Job skills live under `sandbox/skills/`.
+Jobs are non-interactive, scheduled tasks the agent runs (currently as plain `batch/v1`
+CronJobs applied directly to the `rosa-agent-stage` namespace, bypassing Konflux — see
+[Scheduled jobs](#scheduled-jobs)) using a baked-in skill that scopes the work. Job skills
+live under `sandbox/skills/`.
 
 * **`job-sop-improve`** (`sandbox/skills/job-sop-improve/SKILL.md`) — grooms one stale SOP in
     [openshift/ops-sop](https://github.com/openshift/ops-sop) per run. It first fast-forwards the
@@ -41,7 +43,8 @@ baked-in skill that scopes the work. Job skills live under `sandbox/skills/`.
     `ROSA-Agent`) from a feature branch. SOPs untouched for over 3 years are not edited — instead the
     job files a GitHub Issue against upstream suggesting the SOP be evaluated as potentially obsolete.
     Any failure that stops the job opens an Issue against this repo (`openshift-online/rosa-agent`).
-    This job is scheduled as a Konflux cron job in the `rosa-tenant` tenant.
+    Deployed directly to the `rosa-agent-stage` namespace (see `job-sop-improve-cron.yaml`),
+    weekdays at 22:00 UTC (`0 22 * * 1-5`).
 
 * **`job-image-vuln-check`** (`sandbox/skills/job-image-vuln-check/SKILL.md`) — checks a given
     quay.io image for fixable CVEs and remediates them via PR. Retrieval wraps the
@@ -51,7 +54,7 @@ baked-in skill that scopes the work. Job skills live under `sandbox/skills/`.
     verifies a real fix exists (never downgrading), runs the repo's tests before and after the bump,
     and opens a fix-only PR — a second, separate PR follows only if new test coverage was needed.
     Any failure opens an Issue against this repo. Deployed directly to the `rosa-agent-stage`
-    namespace (see `job-image-vuln-check-cron.yaml`), nightly.
+    namespace (see `job-image-vuln-check-cron.yaml`), nightly at 03:07 UTC (`7 3 * * *`).
 
 ## Hypershell Gateway
   
@@ -433,21 +436,26 @@ Built from a shared base via a kustomize overlay:
 * [`releaseplan-patch.yaml`](https://gitlab.cee.redhat.com/releng/konflux-release-data/-/blob/main/tenants-config/cluster/kflux-prd-rh02/tenants/rosa-tenant/overlay/rosa-agent/main/releaseplan-patch.yaml)
 * [`integrationtestscenario-patch.yaml`](https://gitlab.cee.redhat.com/releng/konflux-release-data/-/blob/main/tenants-config/cluster/kflux-prd-rh02/tenants/rosa-tenant/overlay/rosa-agent/main/integrationtestscenario-patch.yaml)
 
-### Scheduled jobs
+## Scheduled jobs
 
-Two plain `batch/v1` CronJobs run `make` targets from this repository. Each has
-a dedicated `ServiceAccount` bound to `konflux-maintainer-user-actions`, and
-consumes `OPENSHELL_OIDC_CLIENT_SECRET` (see below) as an environment variable.
+Two plain `batch/v1` CronJobs run the agent itself (registering the Hypershell
+gateway, minting an OIDC token, then `openshell sandbox create ... -- claude
+--dangerously-skip-permissions --print "<job skill invocation>"`), applied
+directly to the `rosa-agent-stage` namespace with `oc apply -f` rather than
+through Konflux — Konflux's build clusters can't currently reach the
+Hypershell OIDC endpoint (see the header comment in each `*-cron.yaml`, and
+the `Scheduled jobs` comment in the `Makefile`). Each has a dedicated
+`ServiceAccount` scoped to `get` the `openshell-oidc` Secret and
+`get`/`list`/`watch` `batch` jobs, and consumes `OPENSHELL_OIDC_CLIENT_SECRET`
+(see below) from that Secret.
 
-| Job | Schedule | Command | ServiceAccount |
+| Job | Schedule | Invocation | ServiceAccount |
 | --- | --- | --- | --- |
-| `sop-improve` | nightly (`0 3 * * *`) | `make sop-improve` | `rosa-agent-bot-0` |
-| `sdlc-maturity` | weekly, Sun (`0 4 * * 0`) | `make sdlc-maturity` | `rosa-agent-bot-1` |
+| `sop-improve` | weekdays, 22:00 UTC (`0 22 * * 1-5`) | `/job-sop-improve` | `rosa-agent-bot-0` |
+| `image-vuln-check` | nightly, 03:07 UTC (`7 3 * * *`) | `/job-image-vuln-check --image ... --repository ...` | `rosa-agent-bot-1` |
 
-* [`sop-improve-cronjob.yaml`](https://gitlab.cee.redhat.com/releng/konflux-release-data/-/blob/main/tenants-config/cluster/kflux-prd-rh02/tenants/rosa-tenant/sop-improve-cronjob.yaml)
-  / [`sop-improve-rbac.yaml`](https://gitlab.cee.redhat.com/releng/konflux-release-data/-/blob/main/tenants-config/cluster/kflux-prd-rh02/tenants/rosa-tenant/sop-improve-rbac.yaml)
-* [`sdlc-maturity-cronjob.yaml`](https://gitlab.cee.redhat.com/releng/konflux-release-data/-/blob/main/tenants-config/cluster/kflux-prd-rh02/tenants/rosa-tenant/sdlc-maturity-cronjob.yaml)
-  / [`sdlc-maturity-rbac.yaml`](https://gitlab.cee.redhat.com/releng/konflux-release-data/-/blob/main/tenants-config/cluster/kflux-prd-rh02/tenants/rosa-tenant/sdlc-maturity-rbac.yaml)
+* [`job-sop-improve-cron.yaml`](sandbox/skills/job-sop-improve/job-sop-improve-cron.yaml)
+* [`job-image-vuln-check-cron.yaml`](sandbox/skills/job-image-vuln-check/job-image-vuln-check-cron.yaml)
 
 ### Vault-injected credential
 
