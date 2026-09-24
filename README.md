@@ -53,6 +53,24 @@ baked-in skill that scopes the work. Job skills live under `sandbox/skills/`.
     Any failure opens an Issue against this repo. Deployed directly to the `rosa-agent-stage`
     namespace (see `job-image-vuln-check-cron.yaml`), nightly.
 
+* **`job-ops-sop-pr-review`** (`sandbox/skills/job-ops-sop-pr-review/SKILL.md`) — critically
+    reviews every open PR on [openshift/ops-sop](https://github.com/openshift/ops-sop) older than
+    two weeks. Enumeration, filtering, CI-status classification, and ping-comment text are all
+    computed deterministically by the bundled `ops_sop_pr_review` stdlib package (hermetic
+    `unittest` coverage under `tests/`); the agent applies that repo's own `sop-improve` skill's
+    Section 5 ("Verify referenced tools and operators") to check referenced commands/tools against
+    real upstream source, reading existing PR comments/reviews as context so it credits rather than
+    repeats prior reviewer concerns. It posts one approve/do-not-approve recommendation comment per
+    PR, plus (where applicable) a single comment consolidating every author-directed ping — needs-
+    rebase, failing CI (excluding tide's lgtm/approve context), and staleness (>90 days, ccing active
+    reviewers) — into one notification, and a separate comment pinging whoever applied a
+    `do-not-merge/hold` label to ask for re-review. It never edits, merges, or labels a PR, and never
+    reviews `work-in-progress/hold` PRs or PRs it authored itself. It always tries to complete as
+    much of the sweep as possible — one PR's failure doesn't stop the rest — and files at most one
+    Issue against this repo per run for a genuine technical problem (not for "nothing to review").
+    Deployed directly to the `rosa-agent-stage` namespace (see `job-ops-sop-pr-review-cron.yaml`),
+    weekly on Fridays at 22:00 UTC (12:00 HST).
+
 ## Hypershell Gateway
   
   <https://hypershell.apps.rosa.hcmais01ue1.s9m2.p3.openshiftapps.com/gateways/3I94YwZezpdI4AEzuxtJnsVYGVt>
