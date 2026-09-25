@@ -87,6 +87,21 @@ RUN set -eux; \
         npm skopeo; \
     dnf clean all; rm -rf /var/cache/dnf
 
+# --- security fix: libxml2 (CVE-2026-74860, CVE-2026-86138, CVE-2026-86140,
+# CVE-2026-86142, CVE-2026-86143, CVE-2026-86144) ---
+# libxml2 isn't installed directly above; it's pulled in transitively (e.g.
+# by git/python3/skopeo) at whatever version the UBI9 base image snapshot
+# happens to carry. The base image tag is bumped automatically by Konflux's
+# mintmaker/Renovate bot as new UBI9 builds are published, but that bot
+# hadn't yet picked up a build containing the fix at the time of this scan.
+# Pin the fix explicitly with a version-floor constraint so the CVEs are
+# resolved regardless of which UBI9 tag is current; this becomes a no-op
+# once the base image itself catches up.
+RUN set -eux; \
+    dnf -y update --setopt=install_weak_deps=False --nodocs \
+        'libxml2 >= 0:2.9.13-14.el9_8.5'; \
+    dnf clean all; rm -rf /var/cache/dnf
+
 # --- markdownlint (for documentation review by sub-agents) ---
 RUN npm install --global markdownlint-cli2@0.17.2 \
     && npm cache clean --force
