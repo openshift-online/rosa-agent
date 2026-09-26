@@ -85,6 +85,16 @@ RUN set -eux; \
         jq make gcc findutils which tar gzip diffutils \
         curl-minimal rsync procps-ng \
         npm skopeo; \
+    # libxml2 isn't installed directly above - it's inherited from the
+    # ubi9/ubi base layer - so bumping this Containerfile's own package list
+    # can't pin past it. RHSA-2026:71585 (2026-09-24) shipped
+    # libxml2-0:2.9.13-14.el9_8.5 fixing CVE-2026-74860/86138/86140/86142/
+    # 86143/86144; the base image tag pinned above (9.8-1790067847, built
+    # 2026-09-22) predates that erratum and still carries 2.9.13-14.el9_8.4.
+    # Force the upgrade explicitly at build time instead of waiting on a
+    # rebuilt base image tag, so this always resolves to whatever the
+    # advisory shipped once it's published to the repos this build sees.
+    dnf -y update --nodocs libxml2; \
     dnf clean all; rm -rf /var/cache/dnf
 
 # --- markdownlint (for documentation review by sub-agents) ---
