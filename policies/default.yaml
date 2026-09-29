@@ -258,6 +258,17 @@ network_policies:
         access: read-only
         protocol: rest
         enforcement: enforce
+      # proxy.golang.org serves module zip content via redirects to this GCS
+      # bucket rather than from proxy.golang.org itself. Without it, any
+      # `go get`/`go mod download`/`go test`/`go build` that needs a module
+      # not already sitting in the local module cache fails with a proxy 403
+      # despite proxy.golang.org being reachable, the same way the
+      # binary-path mismatches noted below previously defeated this block.
+      - host: storage.googleapis.com
+        port: 443
+        access: read-only
+        protocol: rest
+        enforcement: enforce
     binaries:
       # go-toolset (dnf) installs to /usr/bin/go, not /usr/local/bin/go — see
       # Containerfile. The wrong path here silently defeated this rule: the

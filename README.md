@@ -103,7 +103,9 @@ It defines two things:
   * **GitHub** — read-write to `api.github.com` and `github.com`; read-only to
       `codeload.github.com`, `objects.githubusercontent.com`, and GitHub Actions hosts (CI status).
   * **GitLab** — read-write to `gitlab.cee.redhat.com` (git + `glab`).
-  * **Go tooling** — read-only to `proxy.golang.org`, `sum.golang.org`, and `pkg.go.dev`.
+  * **Go tooling** — read-only to `proxy.golang.org`, `sum.golang.org`, and `pkg.go.dev`, and to
+      `storage.googleapis.com` (`proxy.golang.org` redirects module zip downloads here, needed for
+      `go get`/`go mod download`/`go test`/`go build` on any module not already in the local cache).
   * **Container registry** — read-only to `quay.io` (Quay API for image manifest/vulnerability
       data via `curl`, and the registry v2 API for manifest/tag/label inspection via `skopeo`;
       no image pulls or pushes), and to `s3.us-east-1.amazonaws.com` (quay.io's blob-storage
