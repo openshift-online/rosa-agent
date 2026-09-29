@@ -85,6 +85,12 @@ RUN set -eux; \
         jq make gcc findutils which tar gzip diffutils \
         curl-minimal rsync procps-ng \
         npm skopeo; \
+    # libxml2 is a transitive dependency pulled in by the packages above, not
+    # something this image installs directly - pin it forward explicitly so
+    # a stale base-image snapshot doesn't ship a vulnerable build. Fixes
+    # CVE-2026-74860, CVE-2026-86138, CVE-2026-86140, CVE-2026-86142,
+    # CVE-2026-86143, CVE-2026-86144 (RHSA-2026:71585, libxml2-2.9.13-14.el9_8.5).
+    dnf -y update --setopt=install_weak_deps=False --nodocs libxml2; \
     dnf clean all; rm -rf /var/cache/dnf
 
 # --- markdownlint (for documentation review by sub-agents) ---
