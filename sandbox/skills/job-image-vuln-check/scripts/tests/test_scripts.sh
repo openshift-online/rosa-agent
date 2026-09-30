@@ -60,6 +60,18 @@ assert_contains() {
 # ---------------------------------------------------------------------------
 
 setup_sandbox() {
+  # Reset every fake-gh control var: without this, a FAKE_GH_FAIL_* (or
+  # FAKE_GH_*) exported by an earlier test leaks into every later test,
+  # since `export` in one test function is never scoped to it. This stayed
+  # invisible as long as no later assertion checked *which* stage a failure
+  # was filed for - only that some failure Issue was filed - but it's a real
+  # bug: unset explicitly so each test starts from a clean fake gh.
+  unset FAKE_GH_FAIL_DEFAULT_BRANCH FAKE_GH_DEFAULT_BRANCH \
+    FAKE_GH_FAIL_PR_CREATE FAKE_GH_PR_NUMBER \
+    FAKE_GH_FAIL_LIST_PRS FAKE_GH_PRS_FILE \
+    FAKE_GH_FAIL_SUPERSEDE_COMMENT FAKE_GH_FAIL_SUPERSEDE_CLOSE \
+    FAKE_FORK_REMOTE
+
   SANDBOX="$(mktemp -d)"
   export HOME="$SANDBOX/home"
   mkdir -p "$HOME"
@@ -116,6 +128,27 @@ case "$*" in
   "api -X POST repos/openshift-online/rosa-agent/issues "*)
     exit 0
     ;;
+  "api repos/"*"/pulls?state=open"*)
+    if [ "${FAKE_GH_FAIL_LIST_PRS:-0}" = "1" ]; then
+      echo "simulated: list prs failed" >&2
+      exit 1
+    fi
+    cat "${FAKE_GH_PRS_FILE:?FAKE_GH_PRS_FILE must be set}"
+    ;;
+  "api -X POST repos/"*"/issues/"*"/comments "*)
+    if [ "${FAKE_GH_FAIL_SUPERSEDE_COMMENT:-0}" = "1" ]; then
+      echo "simulated: supersede comment failed" >&2
+      exit 1
+    fi
+    exit 0
+    ;;
+  "api -X PATCH repos/"*"/pulls/"*)
+    if [ "${FAKE_GH_FAIL_SUPERSEDE_CLOSE:-0}" = "1" ]; then
+      echo "simulated: supersede close failed" >&2
+      exit 1
+    fi
+    exit 0
+    ;;
   *)
     echo "fake gh: unhandled invocation: $*" >&2
     exit 99
@@ -123,6 +156,22 @@ case "$*" in
 esac
 FAKE_GH_EOF
   chmod +x "$FAKE_BIN/gh"
+}
+
+# Writes a one-PR-per-bucket-test fixture: an open PR from $1 (owner) with
+# number $2, branch $3, and a job-image-vuln-check marker for image $4 /
+# package $5 / cves $6. Prints the path to the written JSON file.
+write_prs_fixture() {
+  local owner="$1" number="$2" branch="$3" image="$4" package="$5" cves="$6"
+  local file="$SANDBOX/prs.json"
+  jq -n --arg owner "$owner" --argjson number "$number" --arg branch "$branch" \
+    --arg image "$image" --arg package "$package" --arg cves "$cves" '
+    [{
+      number: $number,
+      head: {ref: $branch, repo: {owner: {login: $owner}}},
+      body: "Fixes stuff\n\n<!-- job-image-vuln-check\nimage: \($image)\npackage: \($package)\ncves: \($cves)\n-->\n"
+    }]' > "$file"
+  echo "$file"
 }
 
 # Redirect git traffic for "https://github.com/$1.git" to local path $2 -
@@ -278,6 +327,154 @@ test_common_file_failure_issue_posts_and_reports() {
   teardown_sandbox
 }
 
+test_common_render_pr_marker_round_trips_via_jq() {
+  setup_sandbox
+  local body
+  body="$(bash -c "source '$SCRIPTS_DIR/common.sh'; render_pr_marker 'quay.io/ns/img:tag' 'foo' 'CVE-2024-1,CVE-2024-2'")"
+  assert_contains "$body" "<!-- job-image-vuln-check" "marker opens with the expected comment tag"
+  assert_contains "$body" "image: quay.io/ns/img:tag" "marker embeds the image ref"
+  assert_contains "$body" "package: foo" "marker embeds the package"
+  assert_contains "$body" "cves: CVE-2024-1,CVE-2024-2" "marker embeds the CVE list"
+  teardown_sandbox
+}
+
+# ---------------------------------------------------------------------------
+# find_existing_pr.sh
+# ---------------------------------------------------------------------------
+
+test_find_existing_pr_no_open_prs_exits_3() {
+  setup_sandbox
+  echo "[]" > "$SANDBOX/prs.json"
+  export FAKE_GH_PRS_FILE="$SANDBOX/prs.json"
+  UPSTREAM=acme/rosa-agent FORK_OWNER=acme IMAGE=quay.io/ns/img:tag PACKAGE=foo \
+    bash "$SCRIPTS_DIR/find_existing_pr.sh" >"$SANDBOX/stdout" 2>"$SANDBOX/stderr"
+  assert_eq "3" "$?" "find_existing_pr.sh exits 3 when there are no open PRs at all"
+  assert_eq "" "$(cat "$SANDBOX/stdout")" "nothing printed on no-match"
+  teardown_sandbox
+}
+
+test_find_existing_pr_exact_match_prints_tsv() {
+  setup_sandbox
+  export FAKE_GH_PRS_FILE
+  FAKE_GH_PRS_FILE="$(write_prs_fixture acme 5 fix-cve-a quay.io/ns/img:tag foo CVE-2024-1)"
+  local out rc
+  out="$(UPSTREAM=acme/rosa-agent FORK_OWNER=acme IMAGE=quay.io/ns/img:tag PACKAGE=foo \
+    bash "$SCRIPTS_DIR/find_existing_pr.sh" 2>"$SANDBOX/stderr")"
+  rc=$?
+  assert_eq "0" "$rc" "find_existing_pr.sh exits 0 on a match"
+  assert_eq "$(printf '5\tfix-cve-a\tCVE-2024-1')" "$out" "find_existing_pr.sh prints number/branch/cves as TSV"
+  teardown_sandbox
+}
+
+test_find_existing_pr_ignores_marker_from_a_different_fork_owner() {
+  setup_sandbox
+  export FAKE_GH_PRS_FILE
+  FAKE_GH_PRS_FILE="$(write_prs_fixture "someone-else" 5 fix-cve-a quay.io/ns/img:tag foo CVE-2024-1)"
+  UPSTREAM=acme/rosa-agent FORK_OWNER=acme IMAGE=quay.io/ns/img:tag PACKAGE=foo \
+    bash "$SCRIPTS_DIR/find_existing_pr.sh" >"$SANDBOX/stdout" 2>"$SANDBOX/stderr"
+  assert_eq "3" "$?" "find_existing_pr.sh ignores a marker-carrying PR opened from a different fork owner"
+  teardown_sandbox
+}
+
+test_find_existing_pr_ignores_marker_for_a_different_package() {
+  setup_sandbox
+  export FAKE_GH_PRS_FILE
+  FAKE_GH_PRS_FILE="$(write_prs_fixture acme 5 fix-cve-a quay.io/ns/img:tag bar CVE-2024-1)"
+  UPSTREAM=acme/rosa-agent FORK_OWNER=acme IMAGE=quay.io/ns/img:tag PACKAGE=foo \
+    bash "$SCRIPTS_DIR/find_existing_pr.sh" >"$SANDBOX/stdout" 2>"$SANDBOX/stderr"
+  assert_eq "3" "$?" "find_existing_pr.sh treats a different package as no match, even for the same image"
+  teardown_sandbox
+}
+
+test_find_existing_pr_list_failure_files_issue() {
+  setup_sandbox
+  export FAKE_GH_FAIL_LIST_PRS=1
+  echo "[]" > "$SANDBOX/prs.json"
+  export FAKE_GH_PRS_FILE="$SANDBOX/prs.json"
+  UPSTREAM=acme/rosa-agent FORK_OWNER=acme IMAGE=quay.io/ns/img:tag PACKAGE=foo \
+    bash "$SCRIPTS_DIR/find_existing_pr.sh" >"$SANDBOX/stdout" 2>"$SANDBOX/stderr"
+  local rc=$?
+  assert_eq "2" "$rc" "find_existing_pr.sh exits 2 when listing PRs fails"
+  assert_contains "$(cat "$GH_LOG")" "issues" "a failure Issue was filed when the PR-list call fails"
+  teardown_sandbox
+}
+
+test_find_existing_pr_requires_all_env_vars() {
+  setup_sandbox
+  bash "$SCRIPTS_DIR/find_existing_pr.sh" >"$SANDBOX/stdout" 2>"$SANDBOX/stderr"
+  assert_eq "1" "$?" "find_existing_pr.sh exits 1 when required env vars are unset"
+  teardown_sandbox
+}
+
+# ---------------------------------------------------------------------------
+# open_pr.sh: marker embedding + SUPERSEDES
+# ---------------------------------------------------------------------------
+
+test_open_pr_embeds_marker_when_image_package_cves_given() {
+  setup_sandbox
+  export FAKE_GH_PR_NUMBER=9
+  FORK_OWNER=acme UPSTREAM=acme/rosa-agent BRANCH=my-branch TITLE="A fix" BODY="Details" \
+    IMAGE=quay.io/ns/img:tag PACKAGE=foo CVES="CVE-2024-1,CVE-2024-2" \
+    bash "$SCRIPTS_DIR/open_pr.sh" >"$SANDBOX/stdout" 2>"$SANDBOX/stderr"
+  assert_contains "$(cat "$GH_LOG")" "<!-- job-image-vuln-check" "the PR body sent to the API includes the marker"
+  assert_contains "$(cat "$GH_LOG")" "CVE-2024-1,CVE-2024-2" "the marker's CVE list reaches the API call"
+  teardown_sandbox
+}
+
+test_open_pr_omits_marker_when_only_some_marker_vars_given() {
+  setup_sandbox
+  export FAKE_GH_PR_NUMBER=9
+  FORK_OWNER=acme UPSTREAM=acme/rosa-agent BRANCH=my-branch TITLE="A fix" BODY="Details" \
+    IMAGE=quay.io/ns/img:tag \
+    bash "$SCRIPTS_DIR/open_pr.sh" >"$SANDBOX/stdout" 2>"$SANDBOX/stderr"
+  assert_eq "" "$(grep -F "<!-- job-image-vuln-check" "$GH_LOG" || true)" "no marker added unless IMAGE, PACKAGE and CVES are all given"
+  teardown_sandbox
+}
+
+test_open_pr_supersede_comments_and_closes_old_pr() {
+  setup_sandbox
+  export FAKE_GH_PR_NUMBER=9
+  local out rc
+  out="$(FORK_OWNER=acme UPSTREAM=acme/rosa-agent BRANCH=my-branch TITLE="A fix" BODY="Details" \
+    IMAGE=quay.io/ns/img:tag PACKAGE=foo CVES="CVE-2024-1,CVE-2024-2" SUPERSEDES=5 \
+    bash "$SCRIPTS_DIR/open_pr.sh" 2>"$SANDBOX/stderr")"
+  rc=$?
+  assert_eq "0" "$rc" "open_pr.sh exits 0 when the supersede comment+close both succeed"
+  assert_eq "9" "$out" "open_pr.sh still prints only the new PR number on stdout"
+  assert_contains "$(cat "$GH_LOG")" "issues/5/comments" "commented on the superseded PR"
+  assert_contains "$(cat "$GH_LOG")" "Superseded by #9" "the comment references the new PR number"
+  assert_contains "$(cat "$GH_LOG")" "pulls/5 -f state=closed" "closed the superseded PR"
+  teardown_sandbox
+}
+
+test_open_pr_supersede_comment_failure_files_issue() {
+  setup_sandbox
+  export FAKE_GH_PR_NUMBER=9
+  export FAKE_GH_FAIL_SUPERSEDE_COMMENT=1
+  FORK_OWNER=acme UPSTREAM=acme/rosa-agent BRANCH=my-branch TITLE="A fix" BODY="Details" \
+    IMAGE=quay.io/ns/img:tag PACKAGE=foo CVES="CVE-2024-1" SUPERSEDES=5 \
+    bash "$SCRIPTS_DIR/open_pr.sh" >"$SANDBOX/stdout" 2>"$SANDBOX/stderr"
+  local rc=$?
+  assert_eq "2" "$rc" "open_pr.sh exits 2 when the supersede comment fails"
+  assert_eq "9" "$(cat "$SANDBOX/stdout")" "the new PR number was still printed before the supersede step failed"
+  assert_contains "$(cat "$GH_LOG")" "openshift-online/rosa-agent/issues "  "a failure Issue was filed for the supersede-comment stage"
+  teardown_sandbox
+}
+
+test_open_pr_supersede_close_failure_files_issue() {
+  setup_sandbox
+  export FAKE_GH_PR_NUMBER=9
+  export FAKE_GH_FAIL_SUPERSEDE_CLOSE=1
+  FORK_OWNER=acme UPSTREAM=acme/rosa-agent BRANCH=my-branch TITLE="A fix" BODY="Details" \
+    IMAGE=quay.io/ns/img:tag PACKAGE=foo CVES="CVE-2024-1" SUPERSEDES=5 \
+    bash "$SCRIPTS_DIR/open_pr.sh" >"$SANDBOX/stdout" 2>"$SANDBOX/stderr"
+  local rc=$?
+  assert_eq "2" "$rc" "open_pr.sh exits 2 when the supersede close fails"
+  assert_eq "9" "$(cat "$SANDBOX/stdout")" "the new PR number was still printed before the supersede step failed"
+  assert_contains "$(cat "$GH_LOG")" "openshift-online/rosa-agent/issues "  "a failure Issue was filed for the supersede-close stage"
+  teardown_sandbox
+}
+
 # ---------------------------------------------------------------------------
 
 for t in \
@@ -289,6 +486,18 @@ for t in \
   test_open_pr_create_failure_files_issue \
   test_open_pr_requires_all_env_vars \
   test_common_file_failure_issue_posts_and_reports \
+  test_common_render_pr_marker_round_trips_via_jq \
+  test_find_existing_pr_no_open_prs_exits_3 \
+  test_find_existing_pr_exact_match_prints_tsv \
+  test_find_existing_pr_ignores_marker_from_a_different_fork_owner \
+  test_find_existing_pr_ignores_marker_for_a_different_package \
+  test_find_existing_pr_list_failure_files_issue \
+  test_find_existing_pr_requires_all_env_vars \
+  test_open_pr_embeds_marker_when_image_package_cves_given \
+  test_open_pr_omits_marker_when_only_some_marker_vars_given \
+  test_open_pr_supersede_comments_and_closes_old_pr \
+  test_open_pr_supersede_comment_failure_files_issue \
+  test_open_pr_supersede_close_failure_files_issue \
   ; do
   echo "=== $t ==="
   "$t"

@@ -28,3 +28,19 @@ $detail
   echo "FAILED at stage '$stage':" >&2
   echo "$detail" >&2
 }
+
+# render_pr_marker IMAGE PACKAGE CVES
+#
+# Emits an HTML-comment block (invisible in the rendered PR, greppable in
+# the raw body) embedding this PR's image ref, the package/dependency it
+# bumps, and the CVE IDs it fixes. open_pr.sh appends this when IMAGE,
+# PACKAGE and CVES are all given; find_existing_pr.sh looks for it on a
+# later run to answer "is there already an open PR for this exact
+# image+package bucket, and if so which CVEs does it cover" (see SKILL.md
+# step 4, "one fix per PR, keyed by package+fixed-version+layer"). CVES is
+# a single comma-separated string, e.g. "CVE-2024-1,CVE-2024-2".
+render_pr_marker() {
+  local image="$1" package="$2" cves="$3"
+  printf '\n\n<!-- job-image-vuln-check\nimage: %s\npackage: %s\ncves: %s\n-->\n' \
+    "$image" "$package" "$cves"
+}
