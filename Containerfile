@@ -113,7 +113,7 @@ RUN set -eux; \
     go install sigs.k8s.io/controller-tools/cmd/controller-gen@v0.22.0; \
     go install k8s.io/code-generator/cmd/openapi-gen@v0.29.15; \
     go install go.uber.org/mock/mockgen@v0.4.0; \
-    go install golang.org/x/vuln/cmd/govulncheck@v1.1.4; \
+    go install golang.org/x/vuln/cmd/govulncheck@v1.8.0; \
     go install sigs.k8s.io/controller-runtime/tools/setup-envtest@release-0.23; \
     # Fix GOPATH permissions for OpenShift arbitrary UID (GID 0 pattern)
     for bit in r x; do \
