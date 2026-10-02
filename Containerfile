@@ -91,6 +91,10 @@ RUN set -eux; \
     # CVE-2026-74860, CVE-2026-86138, CVE-2026-86140, CVE-2026-86142,
     # CVE-2026-86143, CVE-2026-86144 (RHSA-2026:71585, libxml2-2.9.13-14.el9_8.5).
     dnf -y update --setopt=install_weak_deps=False --nodocs libxml2; \
+    # gawk is likewise a transitive dependency, not something this image
+    # installs directly - pin it forward explicitly. Fixes CVE-2026-40467,
+    # CVE-2026-40468, CVE-2026-40553 (RHSA-2026:73512, gawk-5.1.0-6.el9_8.1).
+    dnf -y update --setopt=install_weak_deps=False --nodocs gawk; \
     dnf clean all; rm -rf /var/cache/dnf
 
 # --- markdownlint (for documentation review by sub-agents) ---
