@@ -114,7 +114,7 @@ RUN set -eux; \
     go install k8s.io/code-generator/cmd/openapi-gen@v0.29.15; \
     go install go.uber.org/mock/mockgen@v0.4.0; \
     go install golang.org/x/vuln/cmd/govulncheck@v1.1.4; \
-    go install sigs.k8s.io/controller-runtime/tools/setup-envtest@release-0.23; \
+    go install sigs.k8s.io/controller-runtime/tools/setup-envtest@v0.25.2; \
     # Fix GOPATH permissions for OpenShift arbitrary UID (GID 0 pattern)
     for bit in r x; do \
       find /go -perm -u+${bit} -a ! -perm -g+${bit} -exec chmod g+${bit} {} +; \
