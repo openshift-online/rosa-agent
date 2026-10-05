@@ -91,6 +91,11 @@ RUN set -eux; \
     # CVE-2026-74860, CVE-2026-86138, CVE-2026-86140, CVE-2026-86142,
     # CVE-2026-86143, CVE-2026-86144 (RHSA-2026:71585, libxml2-2.9.13-14.el9_8.5).
     dnf -y update --setopt=install_weak_deps=False --nodocs libxml2; \
+    # gdb-gdbserver is a transitive dependency pulled in by go-toolset, not
+    # something this image installs directly - pin it forward explicitly so
+    # a stale base-image snapshot doesn't ship a vulnerable build. Fixes
+    # CVE-2026-13732 (RHSA-2026:73426, gdb-gdbserver-16.3-3.1.el9_8).
+    dnf -y update --setopt=install_weak_deps=False --nodocs gdb-gdbserver; \
     dnf clean all; rm -rf /var/cache/dnf
 
 # --- markdownlint (for documentation review by sub-agents) ---
