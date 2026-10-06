@@ -6,9 +6,10 @@
 #           account (/myself) — everything under GET /rest/api/3/** and
 #           GET /rest/agile/1.0/**.
 #   Write — create issues, edit issues, comment on issues, add remote
-#           (web) links, transition issues, self-assign issues.
-#   Not included: delete issues, bulk operations, attachments, worklogs,
-#   watchers/votes, issue-to-issue links, and admin endpoints (workflow
+#           (web) links, transition issues, self-assign issues, create
+#           issue-to-issue links.
+#   Not included: delete issues, delete issue links, bulk operations,
+#   attachments, worklogs, watchers/votes, and admin endpoints (workflow
 #   schemes, permission schemes, etc.). Add those the same way, as
 #   explicit rules, if a real need shows up — avoid widening POST/PUT
 #   with a catch-all, since that's where real damage is possible.
@@ -60,9 +61,18 @@
 #   Self-assign      — GET /rest/api/3/myself first to get the agent's own
 #                       accountId, then PUT .../assignee with
 #                       {"accountId": "<id>"}.
+#   Link issues      — POST /rest/api/3/issueLink only creates links (there
+#                       is no corresponding DELETE rule). The proxy enforces
+#                       method+path, not request body, so it cannot itself
+#                       restrict which link *type* is used — the agent is
+#                       expected to default to a neutral, non-workflow-
+#                       affecting type (this tenant's "Related"/"relates to"
+#                       is the reference example) rather than something like
+#                       "Blocks" that implies a process dependency, unless
+#                       the user explicitly asks for a different type.
 id: atlassian-jira
 display_name: Atlassian Jira
-description: Jira Cloud access for sandboxed agents — read anything; create, edit, transition, comment on, and self-assign issues; add remote (web) links
+description: Jira Cloud access for sandboxed agents — read anything; create, edit, transition, comment on, link, and self-assign issues; add remote (web) links
 category: data
 credentials:
 - name: api_token
@@ -117,6 +127,11 @@ endpoints:
   - allow:
       method: PUT
       path: /rest/api/3/issue/*/assignee
+  # Create issue-to-issue links. No DELETE rule for /rest/api/3/issueLink/*
+  # is added deliberately - this grants creating links, not removing them.
+  - allow:
+      method: POST
+      path: /rest/api/3/issueLink
 # API gateway host — REQUIRED for scoped tokens. Same allow-list, prefixed
 # with /ex/jira/{cloudId}.
 - host: api.atlassian.com
@@ -151,6 +166,9 @@ endpoints:
   - allow:
       method: PUT
       path: /ex/jira/*/rest/api/3/issue/*/assignee
+  - allow:
+      method: POST
+      path: /ex/jira/*/rest/api/3/issueLink
 binaries:
 - /usr/bin/curl
 - /usr/local/bin/curl

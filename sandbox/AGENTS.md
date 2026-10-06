@@ -41,13 +41,15 @@ follow the `jira` skill BEFORE making any request. Do not improvise Jira calls.
 - Reads (anything under `GET /rest/api/3/**` and `/rest/agile/1.0/**`, plus
   JQL search) are permitted, and so are these specific writes: create an
   issue, edit an issue's fields, comment on an issue, add a remote (web)
-  link, transition an issue, and self-assign an issue. Deletes, bulk
-  operations, attachments, worklogs, watchers/votes, issue-to-issue links,
-  and admin endpoints (workflow/permission schemes, etc.) are NOT permitted.
-  An HTTP `403` means the operation is policy-denied — report it and stop;
-  do not retry variations or attempt to bypass the proxy.
-- There is no native issue-to-issue link write. To relate two issues, add a
-  reciprocal pair of remote links instead (see the `jira` skill).
+  link, transition an issue, self-assign an issue, and create an
+  issue-to-issue link. Deletes (of issues, comments, or issue links), bulk
+  operations, attachments, worklogs, watchers/votes, and admin endpoints
+  (workflow/permission schemes, etc.) are NOT permitted. An HTTP `403`
+  means the operation is policy-denied — report it and stop; do not retry
+  variations or attempt to bypass the proxy.
+- Issue links can be created but not deleted or changed in type once made
+  — default to a neutral type (e.g. this tenant's "Related") unless the
+  user asks for a specific relationship (see the `jira` skill).
 - If both auth modes fail, report the exact HTTP codes and stop. Do not guess.
 
 ## GitHub — you MUST use the `github` skill

@@ -119,8 +119,8 @@ field IDs, project lookups, and `/myself` (the agent's own account) — plus
 `GET /_edge/tenant_info` for cloudId discovery (used by the setup block).
 
 Writes — these specific operations are permitted. Nothing else is: no
-deletes, no bulk operations, no attachments, no worklogs, no
-watchers/votes, no issue-to-issue links, and no admin endpoints
+deletes (of issues, comments, or issue links), no bulk operations, no
+attachments, no worklogs, no watchers/votes, and no admin endpoints
 (workflow/permission schemes, etc.).
 
 1. Create an issue:
@@ -162,27 +162,29 @@ jira -H "Content-Type: application/json" \
   -d '{"object":{"url":"https://example.com/page","title":"Link title"}}'
 ```
 
-**Relating two Jira issues — there is no native issue-link write.** Native
-issue-to-issue links (`POST /rest/api/3/issueLink`, the "relates to" /
-"blocks" / "duplicates" relationships shown in the "Linked issues" panel)
-are NOT permitted — see "What is NOT allowed" below. To cross-reference two
-related issues, add a reciprocal pair of remote links instead, one on each
-issue pointing at the other's Jira URL:
+**Relating two Jira issues.** `POST /rest/api/3/issueLink` creates a real,
+typed issue-to-issue link (shown in the "Linked issues" panel), using the
+`inwardIssue`/`outwardIssue`/`type` shape. There is no corresponding
+`DELETE` rule — links can be created but not removed through this policy.
+Unless the user asks for a specific relationship (e.g. "mark this as
+blocked by"), default to a neutral, non-workflow-affecting link type —
+`GET /rest/api/3/issueLinkType` lists the types this tenant has configured;
+`"Related"` (inward: "is related to", outward: "relates to") is the
+reference example, not something like `"Blocks"` that implies a process
+dependency:
 
 ```shell
-jira -H "Content-Type: application/json" \
-  -X POST "$JB/rest/api/3/issue/PROJ-123/remotelink" \
-  -d '{"object":{"url":"https://<site>.atlassian.net/browse/PROJ-456","title":"Related: PROJ-456 (short description)"}}'
+jira "$JB/rest/api/3/issueLinkType"
 
 jira -H "Content-Type: application/json" \
-  -X POST "$JB/rest/api/3/issue/PROJ-456/remotelink" \
-  -d '{"object":{"url":"https://<site>.atlassian.net/browse/PROJ-123","title":"Related: PROJ-123 (short description)"}}'
+  -X POST "$JB/rest/api/3/issueLink" \
+  -d '{"type":{"name":"Related"},"inwardIssue":{"key":"PROJ-123"},"outwardIssue":{"key":"PROJ-456"}}'
 ```
 
-This is a weaker substitute — it doesn't carry link-type semantics and
-won't appear in the "Linked issues" panel, only as a remote link entry — but
-it's the only cross-issue-reference mechanism this policy grants. See
-ROSAENG-70715.
+A remote (web) link to the other issue's Jira URL (the pattern above) is
+still a reasonable supplement when you also want the relationship visible
+as a clickable reference in a comment or description, but it's no longer
+the only option for relating two issues.
 
 1. Transition an issue. Transition IDs are per-project/per-workflow and not
    guessable, so always `GET .../transitions` first to find the numeric ID
@@ -232,13 +234,12 @@ jira "$JB/rest/agile/1.0/board/{boardId}/sprint?state=active"
 
 ## What is NOT allowed
 
-Deleting issues or comments, bulk operations, attachments, worklogs,
-watchers/votes, issue-to-issue links (use a pair of reciprocal remote links
-instead — see the write pattern above), assigning an issue to someone other
-than the agent itself, and admin endpoints (workflow schemes, permission
-schemes, etc.) are denied by the sandbox network policy. A denied request
-returns HTTP 403 (`policy_denied` or `credential_endpoint_mismatch`). If the
-user's task truly requires a blocked operation, follow
+Deleting issues, comments, or issue links, bulk operations, attachments,
+worklogs, watchers/votes, assigning an issue to someone other than the
+agent itself, and admin endpoints (workflow schemes, permission schemes,
+etc.) are denied by the sandbox network policy. A denied request returns
+HTTP 403 (`policy_denied` or `credential_endpoint_mismatch`). If the user's
+task truly requires a blocked operation, follow
 `/etc/openshell/skills/policy_advisor.md` to propose the narrowest policy
 addition and wait for approval — do not retry variations or attempt to
 bypass the proxy.
