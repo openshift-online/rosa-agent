@@ -1,6 +1,6 @@
 ---
 name: job-image-vuln-check
-description: Nightly job that checks a quay.io image for fixable CVEs and remediates them via PR. Retrieval is deterministic (wraps quay-vuln-report); remediation is agent-driven inference (locate the pin, verify a real fix exists, never downgrade, test before/after, split fix and new-tests into separate PRs). Use when asked to run the image vuln-check job, check an image for CVEs and fix them, or when triggered by a cron/scheduled invocation referencing job-image-vuln-check. Trigger keywords - image vuln check, nightly CVE job, fixable vulnerabilities, remediate CVE, job-image-vuln-check.
+description: Nightly job that checks a quay.io image for fixable CVEs and remediates them via PR. Retrieval is deterministic (wraps quay-vuln-report); remediation is agent-driven inference (locate the pin, verify a real fix exists, never downgrade, test before/after, split fix and new-tests into separate PRs). Before fixing each CVE-fix bucket, checks for an already-open PR covering it: exits with no action if it's the same CVE set, supersedes (new PR, close+reference old) if new CVEs joined the same still-open bucket. Use when asked to run the image vuln-check job, check an image for CVEs and fix them, or when triggered by a cron/scheduled invocation referencing job-image-vuln-check. Trigger keywords - image vuln check, nightly CVE job, fixable vulnerabilities, remediate CVE, job-image-vuln-check.
 ---
 
 # Job: check a quay.io image for fixable CVEs and remediate them
@@ -56,7 +56,40 @@ before - don't reuse a stale conclusion about what's still outstanding.
 ## 4. Remediate, one CVE-fix at a time
 
 For each independently-fixable vulnerability (group multiple CVE IDs that
-share the same package+fixed-version+layer into one fix):
+share the same package+fixed-version+layer into one fix - this grouping is
+the "bucket" referred to below):
+
+0. Check whether an open PR already covers this exact bucket before doing
+   any work on it:
+
+   ```shell
+   UPSTREAM=<owner/repo> FORK_OWNER=<your-account> IMAGE=<image-ref> \
+     PACKAGE=<package> \
+     bash /sandbox/.claude/skills/job-image-vuln-check/scripts/find_existing_pr.sh
+   ```
+
+   - **Exit 3** (nothing printed): no open PR for this bucket yet - continue
+     to step 1, no supersession involved.
+   - **Exit 0**, prints `<pr-number><TAB><branch><TAB><old-cves>`: an open PR
+     already exists for this exact image+package bucket.
+     - `old-cves` (comma-separated) is the **same set** as this bucket's
+       current CVE IDs → this bucket is already being handled. **Skip
+       it - do not open a duplicate PR, do not touch the existing one, do
+       not do any of steps 1-9 for this bucket.**
+     - `old-cves` is a **strict subset** of this bucket's current CVE IDs
+       (every old CVE is still present, plus at least one new one added
+       since that PR was opened) → this is a **supersede**: continue
+       through steps 1-8 for the full current CVE set, then pass
+       `SUPERSEDES=<pr-number>` to `open_pr.sh` in step 8 so it comments on
+       the old PR referencing the new one and closes it.
+     - Anything else (the sets differ without the old set nesting inside
+       the new one - e.g. some old CVEs no longer appear in this scan) →
+       ambiguous; don't auto-close another PR on a guess. Continue through
+       steps 1-8 as an ordinary new PR for the current set, and add a line
+       to its body noting the older open PR by number, so a human can
+       reconcile the two - don't pass `SUPERSEDES` in this case.
+   - **Exit 2**: a failure Issue was already filed by the script for this
+     target - stop, don't retry.
 
 1. Find where the version is actually pinned in the repo (e.g. a
    Containerfile `ARG`, a `go.mod`, a `requirements.txt` - search, don't
@@ -77,12 +110,17 @@ share the same package+fixed-version+layer into one fix):
    that call site and its immediate caller? If there's a real gap, write a
    test against **this repo's own code** - never against the third-party
    library's internals. Say explicitly when this step is a no-op.
-8. Commit, push, then open the fix-only PR:
+8. Commit, push, then open the fix-only PR. Always pass `IMAGE`, `PACKAGE`
+   and `CVES` (the current bucket's comma-separated CVE IDs) so the PR
+   carries the marker `find_existing_pr.sh` looks for on future runs; add
+   `SUPERSEDES=<pr-number>` only in the supersede case from step 0:
 
    ```shell
    git push origin <branch>
    FORK_OWNER=<your-account> UPSTREAM=<owner/repo> BRANCH=<branch> \
      TITLE="<title naming the CVE(s)>" BODY="<summary + evidence>" \
+     IMAGE=<image-ref> PACKAGE=<package> CVES="<CVE-1,CVE-2>" \
+     [SUPERSEDES=<old-pr-number>] \
      bash /sandbox/.claude/skills/job-image-vuln-check/scripts/open_pr.sh
    ```
 
@@ -95,6 +133,10 @@ Repeat per fixable CVE bucket. One fix per PR - never batch.
 ## Guardrails
 
 - Never downgrade. Never batch multiple fixes in one PR. Never force-push.
+- Never open a duplicate PR for a bucket an open PR already covers with the
+  identical CVE set (step 0) - and never close an existing PR unless its CVE
+  set is a confirmed strict subset of the new one (a real supersede, not a
+  guess).
 - Verify version/evidence claims against something real - never invent one.
 - Never print, commit, or put a literal credential anywhere - only the
   `openshell:resolve:env:*` / `${GITHUB_TOKEN}`-style placeholders already
