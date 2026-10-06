@@ -46,6 +46,8 @@ follow the `jira` skill BEFORE making any request. Do not improvise Jira calls.
   and admin endpoints (workflow/permission schemes, etc.) are NOT permitted.
   An HTTP `403` means the operation is policy-denied — report it and stop;
   do not retry variations or attempt to bypass the proxy.
+- There is no native issue-to-issue link write. To relate two issues, add a
+  reciprocal pair of remote links instead (see the `jira` skill).
 - If both auth modes fail, report the exact HTTP codes and stop. Do not guess.
 
 ## GitHub — you MUST use the `github` skill

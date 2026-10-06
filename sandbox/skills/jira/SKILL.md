@@ -162,6 +162,28 @@ jira -H "Content-Type: application/json" \
   -d '{"object":{"url":"https://example.com/page","title":"Link title"}}'
 ```
 
+**Relating two Jira issues — there is no native issue-link write.** Native
+issue-to-issue links (`POST /rest/api/3/issueLink`, the "relates to" /
+"blocks" / "duplicates" relationships shown in the "Linked issues" panel)
+are NOT permitted — see "What is NOT allowed" below. To cross-reference two
+related issues, add a reciprocal pair of remote links instead, one on each
+issue pointing at the other's Jira URL:
+
+```shell
+jira -H "Content-Type: application/json" \
+  -X POST "$JB/rest/api/3/issue/PROJ-123/remotelink" \
+  -d '{"object":{"url":"https://<site>.atlassian.net/browse/PROJ-456","title":"Related: PROJ-456 (short description)"}}'
+
+jira -H "Content-Type: application/json" \
+  -X POST "$JB/rest/api/3/issue/PROJ-456/remotelink" \
+  -d '{"object":{"url":"https://<site>.atlassian.net/browse/PROJ-123","title":"Related: PROJ-123 (short description)"}}'
+```
+
+This is a weaker substitute — it doesn't carry link-type semantics and
+won't appear in the "Linked issues" panel, only as a remote link entry — but
+it's the only cross-issue-reference mechanism this policy grants. See
+ROSAENG-70715.
+
 1. Transition an issue. Transition IDs are per-project/per-workflow and not
    guessable, so always `GET .../transitions` first to find the numeric ID
    for the target status, then `POST` it:
@@ -211,7 +233,8 @@ jira "$JB/rest/agile/1.0/board/{boardId}/sprint?state=active"
 ## What is NOT allowed
 
 Deleting issues or comments, bulk operations, attachments, worklogs,
-watchers/votes, issue-to-issue links, assigning an issue to someone other
+watchers/votes, issue-to-issue links (use a pair of reciprocal remote links
+instead — see the write pattern above), assigning an issue to someone other
 than the agent itself, and admin endpoints (workflow schemes, permission
 schemes, etc.) are denied by the sandbox network policy. A denied request
 returns HTTP 403 (`policy_denied` or `credential_endpoint_mismatch`). If the
