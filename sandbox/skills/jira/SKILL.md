@@ -1,6 +1,6 @@
 ---
 name: jira
-description: Read Jira issues and add comments or web links using curl against the Jira Cloud REST API in an OpenShell sandbox. Use when the user references Jira issues, tickets, cards, sprints, boards, JQL, or asks to comment on or link something to a Jira issue. Trigger keywords - jira, ticket, issue key, JQL, sprint, backlog, board, comment on ticket.
+description: Read, create, edit, transition, comment on, self-assign, and link Jira issues using curl against the Jira Cloud REST API in an OpenShell sandbox. Use when the user references Jira issues, tickets, cards, sprints, boards, JQL, or asks to create, edit, transition, assign, comment on, or link a Jira issue. Trigger keywords - jira, ticket, issue key, JQL, sprint, backlog, board, comment on ticket, create ticket, transition ticket.
 ---
 
 # Jira Cloud in this sandbox
@@ -112,11 +112,37 @@ jira -H "Accept: application/json" "$JB/rest/api/3/issue/PROJ-123"
 
 ## What is allowed (proxy-enforced)
 
-Reads: any `GET` under `/rest/api/3/**` and `/rest/agile/1.0/**`, plus
+Reads: any `GET` under `/rest/api/3/**` and `/rest/agile/1.0/**` — this
+covers getting an issue, comments, transitions list, editmeta, createmeta,
+field IDs, project lookups, and `/myself` (the agent's own account) — plus
 `POST /rest/api/3/search/jql` for JQL search, plus
 `GET /_edge/tenant_info` for cloudId discovery (used by the setup block).
 
-Writes — ONLY these two operations are permitted:
+Writes — these specific operations are permitted. Nothing else is: no
+deletes, no bulk operations, no attachments, no worklogs, no
+watchers/votes, no issue-to-issue links, and no admin endpoints
+(workflow/permission schemes, etc.).
+
+1. Create an issue:
+
+```shell
+jira -H "Content-Type: application/json" \
+  -X POST "$JB/rest/api/3/issue" \
+  -d '{"fields":{"project":{"key":"PROJ"},"issuetype":{"name":"Bug"},"summary":"Short summary here","description":{"type":"doc","version":1,"content":[{"type":"paragraph","content":[{"type":"text","text":"Description text here"}]}]}}}'
+```
+
+1. Edit an issue's fields. Always `GET .../editmeta` first to see which
+   fields are editable on this issue and how (field IDs vary per
+   project/issue type — never guess a `customfield_NNNNN` ID), then `PUT`
+   with only the fields you're changing:
+
+```shell
+jira "$JB/rest/api/3/issue/PROJ-123/editmeta"
+
+jira -H "Content-Type: application/json" \
+  -X PUT "$JB/rest/api/3/issue/PROJ-123" \
+  -d '{"fields":{"summary":"Updated summary"}}'
+```
 
 1. Create a comment:
 
@@ -134,6 +160,31 @@ Comment bodies use Atlassian Document Format (ADF), not plain strings.
 jira -H "Content-Type: application/json" \
   -X POST "$JB/rest/api/3/issue/PROJ-123/remotelink" \
   -d '{"object":{"url":"https://example.com/page","title":"Link title"}}'
+```
+
+1. Transition an issue. Transition IDs are per-project/per-workflow and not
+   guessable, so always `GET .../transitions` first to find the numeric ID
+   for the target status, then `POST` it:
+
+```shell
+jira "$JB/rest/api/3/issue/PROJ-123/transitions"
+
+jira -H "Content-Type: application/json" \
+  -X POST "$JB/rest/api/3/issue/PROJ-123/transitions" \
+  -d '{"transition":{"id":"<id from the GET above>"}}'
+```
+
+1. Self-assign an issue. Get the agent's own `accountId` from `/myself`
+   first, then `PUT` it as the assignee (this endpoint only accepts
+   self-assignment in this policy — assigning to a different account is not
+   permitted):
+
+```shell
+jira "$JB/rest/api/3/myself"
+
+jira -H "Content-Type: application/json" \
+  -X PUT "$JB/rest/api/3/issue/PROJ-123/assignee" \
+  -d '{"accountId":"<the agent'"'"'s own accountId from /myself>"}'
 ```
 
 ## Useful read patterns
@@ -159,13 +210,15 @@ jira "$JB/rest/agile/1.0/board/{boardId}/sprint?state=active"
 
 ## What is NOT allowed
 
-Editing issues, transitions, deletes, editing or deleting comments,
-issue-to-issue links, and any other mutation are denied by the sandbox
-network policy. A denied request returns HTTP 403 (`policy_denied` or
-`credential_endpoint_mismatch`). If the user's task truly requires a
-blocked operation, follow `/etc/openshell/skills/policy_advisor.md` to
-propose the narrowest policy addition and wait for approval — do not
-retry variations or attempt to bypass the proxy.
+Deleting issues or comments, bulk operations, attachments, worklogs,
+watchers/votes, issue-to-issue links, assigning an issue to someone other
+than the agent itself, and admin endpoints (workflow schemes, permission
+schemes, etc.) are denied by the sandbox network policy. A denied request
+returns HTTP 403 (`policy_denied` or `credential_endpoint_mismatch`). If the
+user's task truly requires a blocked operation, follow
+`/etc/openshell/skills/policy_advisor.md` to propose the narrowest policy
+addition and wait for approval — do not retry variations or attempt to
+bypass the proxy.
 
 ## Troubleshooting auth (do NOT brute-force emails or tokens)
 

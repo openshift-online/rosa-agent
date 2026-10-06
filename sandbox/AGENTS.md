@@ -38,9 +38,14 @@ follow the `jira` skill BEFORE making any request. Do not improvise Jira calls.
 - Never brute-force, infer, or invent an email address.
 - Run the skill's auth-detection block ONCE, then use `$JB` and the `jira`
   helper function for every call.
-- Only reads, comment-create, and remotelink-create are permitted. An HTTP
-  `403` means the operation is policy-denied — report it and stop; do not
-  retry variations or attempt to bypass the proxy.
+- Reads (anything under `GET /rest/api/3/**` and `/rest/agile/1.0/**`, plus
+  JQL search) are permitted, and so are these specific writes: create an
+  issue, edit an issue's fields, comment on an issue, add a remote (web)
+  link, transition an issue, and self-assign an issue. Deletes, bulk
+  operations, attachments, worklogs, watchers/votes, issue-to-issue links,
+  and admin endpoints (workflow/permission schemes, etc.) are NOT permitted.
+  An HTTP `403` means the operation is policy-denied — report it and stop;
+  do not retry variations or attempt to bypass the proxy.
 - If both auth modes fail, report the exact HTTP codes and stop. Do not guess.
 
 ## GitHub — you MUST use the `github` skill
