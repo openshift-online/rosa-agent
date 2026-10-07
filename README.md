@@ -4,7 +4,7 @@
 
 ROSA-Agent is a HyperShell gateway and a collection of service accounts and provider credentials for automating ROSA agentic tasks, including recurring scheduled repository maintenance, automated feature implementation and human-interactive sessions. It is owned and maintained by the [ROSA Agentic DevX](https://github.com/openshift-online/rosa-agentic-devx) team.
 
-* Scheduled jobs are plain `batch/v1` CronJobs applied directly to the `rosa-agent-stage` namespace (see [Scheduled jobs](#scheduled-jobs))
+* Scheduled jobs are plain `batch/v1` CronJobs applied directly to the `rosa-agent-stage` namespace (see [docs/JOBS.md](docs/JOBS.md))
 * Automated feature implementation are one-shot, non-interactive ("Read this Jira and implement it")
 
 ## Open Questions
@@ -30,49 +30,14 @@ Future consideations should include perhaps a non-Golang/language Boilerplate [o
 
 ## Jobs
 
-Jobs are non-interactive, scheduled tasks the agent runs (currently as plain `batch/v1`
-CronJobs applied directly to the `rosa-agent-stage` namespace, bypassing Konflux — see
-[Scheduled jobs](#scheduled-jobs)) using a baked-in skill that scopes the work. Job skills
-live under `sandbox/skills/`.
+Jobs are non-interactive, scheduled tasks the agent runs as plain `batch/v1` CronJobs
+applied directly to the `rosa-agent-stage` namespace, bypassing Konflux, using a baked-in
+skill that scopes the work. Job skills live under `sandbox/skills/`.
 
-* **`job-sop-improve`** (`sandbox/skills/job-sop-improve/SKILL.md`) — grooms one stale SOP in
-    [openshift/ops-sop](https://github.com/openshift/ops-sop) per run. It first fast-forwards the
-    agent's fork to upstream's default branch, then selects a single SOP at random from those not
-    updated in the last 3 months and not already in an open PR. Stale SOPs (3 months–3 years old) are
-    improved by wrapping that repo's own `/sop-improve auto-commit` skill and opening a PR (labeled
-    `ROSA-Agent`) from a feature branch. SOPs untouched for over 3 years are not edited — instead the
-    job files a GitHub Issue against upstream suggesting the SOP be evaluated as potentially obsolete.
-    Any failure that stops the job opens an Issue against this repo (`openshift-online/rosa-agent`).
-    Deployed directly to the `rosa-agent-stage` namespace (see `job-sop-improve-cron.yaml`),
-    weekdays at 22:00 UTC (`0 22 * * 1-5`).
-
-* **`job-image-vuln-check`** (`sandbox/skills/job-image-vuln-check/SKILL.md`) — checks a given
-    quay.io image for fixable CVEs and remediates them via PR. Retrieval wraps the
-    `quay-vuln-report` skill (never reimplemented); the image and its source GitHub repo are always
-    given explicitly to the job (or resolved from the image's OCI labels via `skopeo inspect`) —
-    nothing is hardcoded to this repo's own image. For each fixable CVE it locates the version pin,
-    verifies a real fix exists (never downgrading), runs the repo's tests before and after the bump,
-    and opens a fix-only PR — a second, separate PR follows only if new test coverage was needed.
-    Any failure opens an Issue against this repo. Deployed directly to the `rosa-agent-stage`
-    namespace (see `job-image-vuln-check-cron.yaml`), nightly at 03:07 UTC (`7 3 * * *`).
-
-* **`job-ops-sop-pr-review`** (`sandbox/skills/job-ops-sop-pr-review/SKILL.md`) — critically
-    reviews every open PR on [openshift/ops-sop](https://github.com/openshift/ops-sop) older than
-    two weeks. Enumeration, filtering, CI-status classification, and ping-comment text are all
-    computed deterministically by the bundled `ops_sop_pr_review` stdlib package (hermetic
-    `unittest` coverage under `tests/`); the agent applies that repo's own `sop-improve` skill's
-    Section 5 ("Verify referenced tools and operators") to check referenced commands/tools against
-    real upstream source, reading existing PR comments/reviews as context so it credits rather than
-    repeats prior reviewer concerns. It posts one approve/do-not-approve recommendation comment per
-    PR, plus (where applicable) a single comment consolidating every author-directed ping — needs-
-    rebase, failing CI (excluding tide's lgtm/approve context), and staleness (>90 days, ccing active
-    reviewers) — into one notification, and a separate comment pinging whoever applied a
-    `do-not-merge/hold` label to ask for re-review. It never edits, merges, or labels a PR, and never
-    reviews `work-in-progress/hold` PRs or PRs it authored itself. It always tries to complete as
-    much of the sweep as possible — one PR's failure doesn't stop the rest — and files at most one
-    Issue against this repo per run for a genuine technical problem (not for "nothing to review").
-    Deployed directly to the `rosa-agent-stage` namespace (see `job-ops-sop-pr-review-cron.yaml`),
-    weekly on Fridays at 22:00 UTC (12:00 HST).
+See **[docs/JOBS.md](docs/JOBS.md)** for the full list of jobs (what each one does, which
+skill it wraps, failure handling), the CronJob deployment details (schedules, Service
+Accounts, the `image-vuln-check` multi-target fan-out), and the Vault-injected credential
+each one consumes.
 
 ## Hypershell Gateway
   
@@ -457,55 +422,3 @@ Built from a shared base via a kustomize overlay:
 * [`releaseplan-patch.yaml`](https://gitlab.cee.redhat.com/releng/konflux-release-data/-/blob/main/tenants-config/cluster/kflux-prd-rh02/tenants/rosa-tenant/overlay/rosa-agent/main/releaseplan-patch.yaml)
 * [`integrationtestscenario-patch.yaml`](https://gitlab.cee.redhat.com/releng/konflux-release-data/-/blob/main/tenants-config/cluster/kflux-prd-rh02/tenants/rosa-tenant/overlay/rosa-agent/main/integrationtestscenario-patch.yaml)
 
-## Scheduled jobs
-
-Two plain `batch/v1` CronJobs run the agent itself (registering the Hypershell
-gateway, minting an OIDC token, then `openshell sandbox create ... -- claude
---dangerously-skip-permissions --print "<job skill invocation>"`), applied
-directly to the `rosa-agent-stage` namespace with `oc apply -f` rather than
-through Konflux — Konflux's build clusters can't currently reach the
-Hypershell OIDC endpoint (see the header comment in each `*-cron.yaml`, and
-the `Scheduled jobs` comment in the `Makefile`). Each has a dedicated
-`ServiceAccount` scoped to `get` the `openshell-oidc` Secret and
-`get`/`list`/`watch` `batch` jobs, and consumes `OPENSHELL_OIDC_CLIENT_SECRET`
-(see below) from that Secret.
-
-| Job | Schedule | Invocation | ServiceAccount |
-| --- | --- | --- | --- |
-| `sop-improve` | weekdays, 22:00 UTC (`0 22 * * 1-5`) | `/job-sop-improve` | `rosa-agent-bot-0` |
-| `image-vuln-check` | nightly, 03:07 UTC (`7 3 * * *`) | `/job-image-vuln-check --image ... --repository ...` | `rosa-agent-bot-1` |
-
-* [`job-sop-improve-cron.yaml`](sandbox/skills/job-sop-improve/job-sop-improve-cron.yaml)
-* [`job-image-vuln-check-cron.yaml`](sandbox/skills/job-image-vuln-check/job-image-vuln-check-cron.yaml)
-
-### Vault-injected credential
-
-`OPENSHELL_OIDC_CLIENT_SECRET` is pulled from Vault by the External Secrets
-Operator using an AppRole, and materialized as a Kubernetes Secret named
-`openshell-oidc` that the CronJobs mount. It reads the `hypershell-oidc-client-secret`
-field of `rosa-agent-konflux` on the `osd-sre` Vault mount (`vault kv get -mount=osd-sre
--field=hypershell-oidc-client-secret rosa-agent-konflux`), via a dedicated
-`osd-sre-vault` `SecretStore`.
-
-* [`secretstore/osd-sre-vault.yaml`](https://gitlab.cee.redhat.com/releng/konflux-release-data/-/blob/main/tenants-config/cluster/kflux-prd-rh02/tenants/rosa-tenant/secretstore/osd-sre-vault.yaml)
-  — `SecretStore` for the `osd-sre` mount (AppRole `rosa-agent`)
-* [`externalsecret/openshell-oidc.yaml`](https://gitlab.cee.redhat.com/releng/konflux-release-data/-/blob/main/tenants-config/cluster/kflux-prd-rh02/tenants/rosa-tenant/externalsecret/openshell-oidc.yaml)
-  — `ExternalSecret` producing the `openshell-oidc` Secret
-
-Bootstrapping still required outside the GitOps repo: create the `rosa-agent`
-Vault AppRole and set its `roleId` in `osd-sre-vault.yaml`, and create the
-`osd-sre-vault-app-role-secret` Kubernetes Secret (key `secret-id`) in the
-`rosa-tenant` namespace.
-
-The Vault side of that AppRole is managed in app-interface. A
-[replication policy](https://gitlab.cee.redhat.com/service/app-interface/-/blob/master/data/services/vault.devshift.net/config/ci-ext/policies/replication-policies/osd-sre-rosa-agent-replication-policy.yml)
-copies just the `osd-sre/rosa-agent-konflux` secret from the primary
-`vault.devshift.net` to `vault.ci.ext.devshift.net`, where Konflux authenticates.
-The [`rosa-agent` AppRole](https://gitlab.cee.redhat.com/service/app-interface/-/blob/master/data/services/vault.devshift.net/config/ci-ext/roles/approles/rosa-agent-approle.yml)
-is granted read on that replicated secret by its
-[access policy](https://gitlab.cee.redhat.com/service/app-interface/-/blob/master/data/services/vault.devshift.net/config/ci-ext/policies/rosa-agent-policy.yml),
-and its generated `secret_id` is published to `app-sre/approles/rosa-agent-approle`.
-A [creds policy](https://gitlab.cee.redhat.com/service/app-interface/-/blob/master/data/services/vault.devshift.net/config/ci-ext/policies/rosa-agent-approle-creds-policy.yml)
-plus [OIDC permission](https://gitlab.cee.redhat.com/service/app-interface/-/blob/master/data/dependencies/vault/permissions/oidc/ci-ext/rosa-agent.yml)
-let the `team-rosa-act-members` team read that `secret_id` to seed the
-`osd-sre-vault-app-role-secret` Kubernetes Secret above.
