@@ -70,6 +70,7 @@ setup_sandbox() {
     FAKE_GH_FAIL_PR_CREATE FAKE_GH_PR_NUMBER \
     FAKE_GH_FAIL_LIST_PRS FAKE_GH_PRS_FILE \
     FAKE_GH_FAIL_SUPERSEDE_COMMENT FAKE_GH_FAIL_SUPERSEDE_CLOSE \
+    FAKE_GH_FAIL_CLOSE_OBSOLETE_COMMENT FAKE_GH_FAIL_CLOSE_OBSOLETE_CLOSE \
     FAKE_FORK_REMOTE
 
   SANDBOX="$(mktemp -d)"
@@ -136,15 +137,15 @@ case "$*" in
     cat "${FAKE_GH_PRS_FILE:?FAKE_GH_PRS_FILE must be set}"
     ;;
   "api -X POST repos/"*"/issues/"*"/comments "*)
-    if [ "${FAKE_GH_FAIL_SUPERSEDE_COMMENT:-0}" = "1" ]; then
-      echo "simulated: supersede comment failed" >&2
+    if [ "${FAKE_GH_FAIL_SUPERSEDE_COMMENT:-0}" = "1" ] || [ "${FAKE_GH_FAIL_CLOSE_OBSOLETE_COMMENT:-0}" = "1" ]; then
+      echo "simulated: comment failed" >&2
       exit 1
     fi
     exit 0
     ;;
   "api -X PATCH repos/"*"/pulls/"*)
-    if [ "${FAKE_GH_FAIL_SUPERSEDE_CLOSE:-0}" = "1" ]; then
-      echo "simulated: supersede close failed" >&2
+    if [ "${FAKE_GH_FAIL_SUPERSEDE_CLOSE:-0}" = "1" ] || [ "${FAKE_GH_FAIL_CLOSE_OBSOLETE_CLOSE:-0}" = "1" ]; then
+      echo "simulated: close failed" >&2
       exit 1
     fi
     exit 0
@@ -171,6 +172,32 @@ write_prs_fixture() {
       head: {ref: $branch, repo: {owner: {login: $owner}}},
       body: "Fixes stuff\n\n<!-- job-image-vuln-check\nimage: \($image)\npackage: \($package)\ncves: \($cves)\n-->\n"
     }]' > "$file"
+  echo "$file"
+}
+
+# Same single-PR shape as write_prs_fixture, but returns the PR object as its
+# own JSON file instead of wrapping it in a one-element array - a building
+# block for write_prs_fixture_multi below, for tests needing more than one
+# open PR in the same fixture.
+pr_json_file() {
+  local owner="$1" number="$2" branch="$3" image="$4" package="$5" cves="$6"
+  local file
+  file="$(mktemp "$SANDBOX/pr.XXXXXX.json")"
+  jq -n --arg owner "$owner" --argjson number "$number" --arg branch "$branch" \
+    --arg image "$image" --arg package "$package" --arg cves "$cves" '
+    {
+      number: $number,
+      head: {ref: $branch, repo: {owner: {login: $owner}}},
+      body: "Fixes stuff\n\n<!-- job-image-vuln-check\nimage: \($image)\npackage: \($package)\ncves: \($cves)\n-->\n"
+    }' > "$file"
+  echo "$file"
+}
+
+# Combines one or more pr_json_file paths into a single PR-list fixture.
+# Prints the path to the written JSON file.
+write_prs_fixture_multi() {
+  local file="$SANDBOX/prs.json"
+  jq -s '.' "$@" > "$file"
   echo "$file"
 }
 
@@ -476,6 +503,150 @@ test_open_pr_supersede_close_failure_files_issue() {
 }
 
 # ---------------------------------------------------------------------------
+# close_obsolete_prs.sh
+# ---------------------------------------------------------------------------
+
+test_close_obsolete_prs_no_open_prs_is_a_noop() {
+  setup_sandbox
+  echo "[]" > "$SANDBOX/prs.json"
+  export FAKE_GH_PRS_FILE="$SANDBOX/prs.json"
+  local out rc
+  out="$(UPSTREAM=acme/rosa-agent FORK_OWNER=acme IMAGE=quay.io/ns/img:tag CURRENT_CVES="" \
+    bash "$SCRIPTS_DIR/close_obsolete_prs.sh" 2>"$SANDBOX/stderr")"
+  rc=$?
+  assert_eq "0" "$rc" "close_obsolete_prs.sh exits 0 when there are no open PRs at all"
+  assert_eq "" "$out" "nothing printed when there's nothing to close"
+  teardown_sandbox
+}
+
+test_close_obsolete_prs_closes_pr_whose_cves_are_all_gone() {
+  setup_sandbox
+  export FAKE_GH_PRS_FILE
+  FAKE_GH_PRS_FILE="$(write_prs_fixture acme 5 fix-gawk quay.io/ns/img:tag gawk "CVE-2024-1,CVE-2024-2")"
+  local out rc
+  out="$(UPSTREAM=acme/rosa-agent FORK_OWNER=acme IMAGE=quay.io/ns/img:tag CURRENT_CVES="CVE-2024-9" \
+    bash "$SCRIPTS_DIR/close_obsolete_prs.sh" 2>"$SANDBOX/stderr")"
+  rc=$?
+  assert_eq "0" "$rc" "close_obsolete_prs.sh exits 0 after closing an obsolete PR"
+  assert_eq "$(printf '5\tCVE-2024-1,CVE-2024-2')" "$out" "prints the closed PR's number and its now-obsolete CVEs"
+  assert_contains "$(cat "$GH_LOG")" "issues/5/comments" "commented on the obsolete PR"
+  assert_contains "$(cat "$GH_LOG")" "pulls/5 -f state=closed" "closed the obsolete PR"
+  teardown_sandbox
+}
+
+test_close_obsolete_prs_empty_current_cves_closes_every_marked_pr() {
+  setup_sandbox
+  export FAKE_GH_PRS_FILE
+  FAKE_GH_PRS_FILE="$(write_prs_fixture acme 5 fix-gawk quay.io/ns/img:tag gawk "CVE-2024-1")"
+  local out rc
+  out="$(UPSTREAM=acme/rosa-agent FORK_OWNER=acme IMAGE=quay.io/ns/img:tag CURRENT_CVES="" \
+    bash "$SCRIPTS_DIR/close_obsolete_prs.sh" 2>"$SANDBOX/stderr")"
+  rc=$?
+  assert_eq "0" "$rc" "close_obsolete_prs.sh exits 0"
+  assert_eq "$(printf '5\tCVE-2024-1')" "$out" "an empty CURRENT_CVES (nothing fixable left on the image) obsoletes every marked PR"
+  teardown_sandbox
+}
+
+test_close_obsolete_prs_leaves_partial_overlap_untouched() {
+  setup_sandbox
+  export FAKE_GH_PRS_FILE
+  FAKE_GH_PRS_FILE="$(write_prs_fixture acme 5 fix-gawk quay.io/ns/img:tag gawk "CVE-2024-1,CVE-2024-2")"
+  local out rc
+  out="$(UPSTREAM=acme/rosa-agent FORK_OWNER=acme IMAGE=quay.io/ns/img:tag CURRENT_CVES="CVE-2024-2" \
+    bash "$SCRIPTS_DIR/close_obsolete_prs.sh" 2>"$SANDBOX/stderr")"
+  rc=$?
+  assert_eq "0" "$rc" "close_obsolete_prs.sh exits 0 even when nothing is closed"
+  assert_eq "" "$out" "a PR with even one CVE still present is left alone, not closed"
+  assert_eq "" "$(grep -F "issues/5/comments" "$GH_LOG" || true)" "no comment posted for a still-live bucket"
+  assert_eq "" "$(grep -F "pulls/5 " "$GH_LOG" || true)" "no close call for a still-live bucket"
+  teardown_sandbox
+}
+
+test_close_obsolete_prs_ignores_marker_for_a_different_image() {
+  setup_sandbox
+  export FAKE_GH_PRS_FILE
+  FAKE_GH_PRS_FILE="$(write_prs_fixture acme 5 fix-gawk quay.io/ns/other-img:tag gawk "CVE-2024-1")"
+  local out
+  out="$(UPSTREAM=acme/rosa-agent FORK_OWNER=acme IMAGE=quay.io/ns/img:tag CURRENT_CVES="" \
+    bash "$SCRIPTS_DIR/close_obsolete_prs.sh" 2>"$SANDBOX/stderr")"
+  assert_eq "" "$out" "a marker for a different image is never touched, regardless of CURRENT_CVES"
+  teardown_sandbox
+}
+
+test_close_obsolete_prs_ignores_marker_from_a_different_fork_owner() {
+  setup_sandbox
+  export FAKE_GH_PRS_FILE
+  FAKE_GH_PRS_FILE="$(write_prs_fixture someone-else 5 fix-gawk quay.io/ns/img:tag gawk "CVE-2024-1")"
+  local out
+  out="$(UPSTREAM=acme/rosa-agent FORK_OWNER=acme IMAGE=quay.io/ns/img:tag CURRENT_CVES="" \
+    bash "$SCRIPTS_DIR/close_obsolete_prs.sh" 2>"$SANDBOX/stderr")"
+  assert_eq "" "$out" "a marker-carrying PR opened from a different fork owner is never touched"
+  teardown_sandbox
+}
+
+test_close_obsolete_prs_handles_several_prs_independently() {
+  setup_sandbox
+  local f1 f2
+  f1="$(pr_json_file acme 5 fix-gawk quay.io/ns/img:tag gawk "CVE-2024-1")"
+  f2="$(pr_json_file acme 6 fix-gdb quay.io/ns/img:tag gdb-gdbserver "CVE-2024-2")"
+  export FAKE_GH_PRS_FILE
+  FAKE_GH_PRS_FILE="$(write_prs_fixture_multi "$f1" "$f2")"
+  local out
+  out="$(UPSTREAM=acme/rosa-agent FORK_OWNER=acme IMAGE=quay.io/ns/img:tag CURRENT_CVES="CVE-2024-2" \
+    bash "$SCRIPTS_DIR/close_obsolete_prs.sh" 2>"$SANDBOX/stderr")"
+  assert_eq "$(printf '5\tCVE-2024-1')" "$out" "only the PR whose CVE is actually gone gets closed; the other is left alone"
+  assert_contains "$(cat "$GH_LOG")" "issues/5/comments" "commented on the obsolete PR (#5)"
+  assert_eq "" "$(grep -F "issues/6/comments" "$GH_LOG" || true)" "the still-live PR (#6) was never commented on"
+  teardown_sandbox
+}
+
+test_close_obsolete_prs_list_failure_files_issue() {
+  setup_sandbox
+  export FAKE_GH_FAIL_LIST_PRS=1
+  echo "[]" > "$SANDBOX/prs.json"
+  export FAKE_GH_PRS_FILE="$SANDBOX/prs.json"
+  UPSTREAM=acme/rosa-agent FORK_OWNER=acme IMAGE=quay.io/ns/img:tag CURRENT_CVES="" \
+    bash "$SCRIPTS_DIR/close_obsolete_prs.sh" >"$SANDBOX/stdout" 2>"$SANDBOX/stderr"
+  local rc=$?
+  assert_eq "2" "$rc" "close_obsolete_prs.sh exits 2 when listing PRs fails"
+  assert_contains "$(cat "$GH_LOG")" "issues" "a failure Issue was filed when the PR-list call fails"
+  teardown_sandbox
+}
+
+test_close_obsolete_prs_comment_failure_files_issue() {
+  setup_sandbox
+  export FAKE_GH_PRS_FILE
+  FAKE_GH_PRS_FILE="$(write_prs_fixture acme 5 fix-gawk quay.io/ns/img:tag gawk "CVE-2024-1")"
+  export FAKE_GH_FAIL_CLOSE_OBSOLETE_COMMENT=1
+  UPSTREAM=acme/rosa-agent FORK_OWNER=acme IMAGE=quay.io/ns/img:tag CURRENT_CVES="" \
+    bash "$SCRIPTS_DIR/close_obsolete_prs.sh" >"$SANDBOX/stdout" 2>"$SANDBOX/stderr"
+  local rc=$?
+  assert_eq "2" "$rc" "close_obsolete_prs.sh exits 2 when the obsolete-comment call fails"
+  assert_contains "$(cat "$GH_LOG")" "openshift-online/rosa-agent/issues " "a failure Issue was filed for the close-obsolete-prs-comment stage"
+  teardown_sandbox
+}
+
+test_close_obsolete_prs_close_failure_files_issue() {
+  setup_sandbox
+  export FAKE_GH_PRS_FILE
+  FAKE_GH_PRS_FILE="$(write_prs_fixture acme 5 fix-gawk quay.io/ns/img:tag gawk "CVE-2024-1")"
+  export FAKE_GH_FAIL_CLOSE_OBSOLETE_CLOSE=1
+  UPSTREAM=acme/rosa-agent FORK_OWNER=acme IMAGE=quay.io/ns/img:tag CURRENT_CVES="" \
+    bash "$SCRIPTS_DIR/close_obsolete_prs.sh" >"$SANDBOX/stdout" 2>"$SANDBOX/stderr"
+  local rc=$?
+  assert_eq "2" "$rc" "close_obsolete_prs.sh exits 2 when the obsolete-close call fails"
+  assert_contains "$(cat "$GH_LOG")" "openshift-online/rosa-agent/issues " "a failure Issue was filed for the close-obsolete-prs-close stage"
+  teardown_sandbox
+}
+
+test_close_obsolete_prs_requires_all_env_vars() {
+  setup_sandbox
+  bash "$SCRIPTS_DIR/close_obsolete_prs.sh" >"$SANDBOX/stdout" 2>"$SANDBOX/stderr"
+  assert_eq "1" "$?" "close_obsolete_prs.sh exits 1 when required env vars are unset"
+  teardown_sandbox
+}
+
+# ---------------------------------------------------------------------------
 
 for t in \
   test_sync_fork_fast_forwards_and_pushes \
@@ -498,6 +669,17 @@ for t in \
   test_open_pr_supersede_comments_and_closes_old_pr \
   test_open_pr_supersede_comment_failure_files_issue \
   test_open_pr_supersede_close_failure_files_issue \
+  test_close_obsolete_prs_no_open_prs_is_a_noop \
+  test_close_obsolete_prs_closes_pr_whose_cves_are_all_gone \
+  test_close_obsolete_prs_empty_current_cves_closes_every_marked_pr \
+  test_close_obsolete_prs_leaves_partial_overlap_untouched \
+  test_close_obsolete_prs_ignores_marker_for_a_different_image \
+  test_close_obsolete_prs_ignores_marker_from_a_different_fork_owner \
+  test_close_obsolete_prs_handles_several_prs_independently \
+  test_close_obsolete_prs_list_failure_files_issue \
+  test_close_obsolete_prs_comment_failure_files_issue \
+  test_close_obsolete_prs_close_failure_files_issue \
+  test_close_obsolete_prs_requires_all_env_vars \
   ; do
   echo "=== $t ==="
   "$t"

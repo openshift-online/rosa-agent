@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # find_existing_pr.sh - look for an OPEN PR against UPSTREAM, opened from
 # FORK_OWNER's fork, that already targets this exact IMAGE + PACKAGE bucket
-# (SKILL.md step 4: one fix per PR, keyed by package+fixed-version+layer,
+# (SKILL.md step 5: one fix per PR, keyed by package+fixed-version+layer,
 # never batched across a whole image). Depends on open_pr.sh having embedded
 # a job-image-vuln-check marker (image/package/cves) in the PR body - see
 # render_pr_marker in common.sh. Never modifies anything - read-only lookup.
