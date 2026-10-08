@@ -54,11 +54,11 @@ and run its auth-detection block once. Then:
   for.
 - Read the full description and every comment - the work to do is described
   there, not inferred from the summary line alone.
-- If the ticket is unassigned, self-assign it (the one assignment operation
-  the `jira` skill/policy permits - `PUT .../assignee` with your own
-  `accountId`) before starting work. If it's already assigned to someone
-  else, stop there - note it in the final output and do not touch their
-  ticket; don't `file_failure_issue` for this, it isn't a failure.
+- **Do not self-assign the ticket.** Assignment to `rosa-agent` is expected
+  to already be set by whatever triggered this run - never call `PUT
+  .../assignee` yourself. If the ticket is assigned to someone else, stop
+  there - note it in the final output and do not touch their ticket; don't
+  `file_failure_issue` for this, it isn't a failure.
 
 ## 3. Identify the target repository
 
