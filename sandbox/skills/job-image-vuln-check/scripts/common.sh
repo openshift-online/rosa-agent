@@ -37,7 +37,7 @@ $detail
 # PACKAGE and CVES are all given; find_existing_pr.sh looks for it on a
 # later run to answer "is there already an open PR for this exact
 # image+package bucket, and if so which CVEs does it cover" (see SKILL.md
-# step 4, "one fix per PR, keyed by package+fixed-version+layer"). CVES is
+# step 5, "one fix per PR, keyed by package+fixed-version+layer"). CVES is
 # a single comma-separated string, e.g. "CVE-2024-1,CVE-2024-2".
 render_pr_marker() {
   local image="$1" package="$2" cves="$3"

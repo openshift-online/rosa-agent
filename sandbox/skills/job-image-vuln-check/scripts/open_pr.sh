@@ -24,7 +24,7 @@
 #
 # SUPERSEDES, when given, is an older open PR number that find_existing_pr.sh
 # has already established covers a strict subset of this PR's CVEs for the
-# same image+package bucket (SKILL.md step 4, step 0's "supersede" case).
+# same image+package bucket (SKILL.md step 5, step 0's "supersede" case).
 # Once the new PR opens successfully, this script comments on SUPERSEDES
 # referencing the new PR and closes it. This script trusts the caller's
 # judgement about the subset relationship - it does not re-verify it.

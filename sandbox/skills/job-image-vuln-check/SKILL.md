@@ -1,6 +1,6 @@
 ---
 name: job-image-vuln-check
-description: Nightly job that checks a quay.io image for fixable CVEs and remediates them via PR. Retrieval is deterministic (wraps quay-vuln-report); remediation is agent-driven inference (locate the pin, verify a real fix exists, never downgrade, test before/after, split fix and new-tests into separate PRs). Before fixing each CVE-fix bucket, checks for an already-open PR covering it: exits with no action if it's the same CVE set, supersedes (new PR, close+reference old) if new CVEs joined the same still-open bucket. Use when asked to run the image vuln-check job, check an image for CVEs and fix them, or when triggered by a cron/scheduled invocation referencing job-image-vuln-check. Trigger keywords - image vuln check, nightly CVE job, fixable vulnerabilities, remediate CVE, job-image-vuln-check.
+description: Nightly job that checks a quay.io image for fixable CVEs and remediates them via PR. Retrieval is deterministic (wraps quay-vuln-report); remediation is agent-driven inference (locate the pin, verify a real fix exists, never downgrade, test before/after, split fix and new-tests into separate PRs). Before fixing each CVE-fix bucket, checks for an already-open PR covering it: exits with no action if it's the same CVE set, supersedes (new PR, close+reference old) if new CVEs joined the same still-open bucket. Also closes any already-open PR for an image whose CVEs are no longer present in the latest scan at all (e.g. an unrelated base-image bump already fixed them), so stale fix PRs don't linger. Use when asked to run the image vuln-check job, check an image for CVEs and fix them, or when triggered by a cron/scheduled invocation referencing job-image-vuln-check. Trigger keywords - image vuln check, nightly CVE job, fixable vulnerabilities, remediate CVE, job-image-vuln-check.
 ---
 
 # Job: check a quay.io image for fixable CVEs and remediate them
@@ -53,7 +53,43 @@ Discovers the actual default branch itself - never assume `main`. Exit code
 force a merge. Do this fresh for every run, even against a repo you synced
 before - don't reuse a stale conclusion about what's still outstanding.
 
-## 4. Remediate, one CVE-fix at a time
+## 4. Close obsolete PRs
+
+Before remediating anything new, check whether this run's scan has already
+made any currently-open `job-image-vuln-check` PR for this image moot - e.g.
+an unrelated base-image bump happened to carry a fix in before this job got
+to it. This has real precedent: PR #48 forward-pinned `libxml2`, and a later
+scan of the rebuilt image shows zero `libxml2` CVEs at all - if that fix had
+instead landed some other way while #48 was still open, #48 itself would
+have been exactly this kind of obsolete PR.
+
+Build `CURRENT_CVES`: the comma-separated list of every CVE ID in this run's
+step-2 retrieval for this image, across *all* packages (not just one
+bucket), then:
+
+```shell
+UPSTREAM=<owner/repo> FORK_OWNER=<your-account> IMAGE=<image-ref> \
+  CURRENT_CVES="<comma-separated CVE IDs from this run's retrieval, or empty>" \
+  bash /sandbox/.claude/skills/job-image-vuln-check/scripts/close_obsolete_prs.sh
+```
+
+- Closes (with an explanatory comment) any open, marker-carrying PR for this
+  exact image where **none** of its CVEs appear in `CURRENT_CVES` anymore -
+  every CVE that PR exists to fix has already been resolved some other way.
+  Prints `<pr-number><TAB><cves>` for each one it closes; prints nothing if
+  none were obsolete (the normal case, including "no open marked PRs for
+  this image at all").
+- A PR with a **partial** overlap (some of its CVEs still present, some
+  gone) is left untouched here - that bucket is still live. It goes through
+  the step-0 dedup/supersede check in step 5 when it's reprocessed, not this
+  script. Never close a PR on a partial match.
+- `CURRENT_CVES` may legitimately be empty - that means this run found zero
+  fixable CVEs on the image at all, so every open marked PR for it is
+  obsolete.
+- **Exit 2**: a failure Issue was already filed by the script for this
+  target - stop, don't retry.
+
+## 5. Remediate, one CVE-fix at a time
 
 For each independently-fixable vulnerability (group multiple CVE IDs that
 share the same package+fixed-version+layer into one fix - this grouping is
@@ -134,9 +170,11 @@ Repeat per fixable CVE bucket. One fix per PR - never batch.
 
 - Never downgrade. Never batch multiple fixes in one PR. Never force-push.
 - Never open a duplicate PR for a bucket an open PR already covers with the
-  identical CVE set (step 0) - and never close an existing PR unless its CVE
-  set is a confirmed strict subset of the new one (a real supersede, not a
-  guess).
+  identical CVE set (step 5's step 0) - and never close an existing PR
+  unless its CVE set is a confirmed strict subset of the new one (a real
+  supersede, not a guess).
+- Never close a PR via step 4 on a partial CVE match - only when none of its
+  CVEs appear in the current scan at all.
 - Verify version/evidence claims against something real - never invent one.
 - Never print, commit, or put a literal credential anywhere - only the
   `openshell:resolve:env:*` / `${GITHUB_TOKEN}`-style placeholders already
