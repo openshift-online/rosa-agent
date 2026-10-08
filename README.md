@@ -21,6 +21,11 @@ Future:
 * Jira NEW card creation?
 * Webhook?
 * Chai-bot/Slack?
+* An enumerator/CronJob that finds every open `PMR-AI`-labeled ticket
+  assigned to `rosa-agent` and invokes the `pmr-action-item` skill once per
+  ticket, the way `image-vuln-check` fans out over its target list today -
+  the skill itself (`sandbox/skills/pmr-action-item/SKILL.md`) already
+  handles one ticket per run; only the enumeration/fan-out is still open.
 
 ## UBI9 Base Image
 
