@@ -124,26 +124,36 @@ yourself - treat it as a blocker (step 7): comment on the ticket describing
 the exact finding, and stop. Never open a PR carrying an unresolved CONFIRMED
 finding.
 
-## 7. Blockers - you do not have unlimited internet access
+## 7. Blockers - especially access issues - go on the ticket
 
 You are running in an OpenShell sandbox behind a proxy-enforced,
 allow-listed egress policy (`policies/default.yaml`) with the credential and
-skill constraints in `AGENTS.md`. If you hit any blocker:
+skill constraints in `AGENTS.md`. **Any access issue that stops you doing
+the work is a blocker, not something to route around:**
 
 - a `403` / `policy_denied` / `credential_endpoint_mismatch` response from
-  anywhere;
+  anywhere (Jira, GitHub, the target repo's own CI/registry/etc.);
 - a host or endpoint you'd need that isn't allow-listed;
+- missing permissions on the target repo or fork (e.g. can't push, can't
+  open a PR, can't attach a label - compare `job-image-vuln-check`'s and
+  `github-labels`' own "report and stop on 403" convention);
+- an expired/invalid credential placeholder;
+
+and so are these, non-access blockers that equally stop forward progress:
+
 - an ambiguous or underspecified requirement in the ticket (including "I
   can't tell which repo this is about" from step 3);
 - a security finding from step 6 you can't safely resolve yourself;
 - failing tests you can't get green;
-- anything else that stops you from completing the ticket;
+- anything else that stops you from completing the ticket.
 
-**do not retry around it, guess past it, or silently stop.** Instead, add a
+**Do not retry around it, guess past it, or silently stop.** Instead, add a
 comment to the ticket (via the `jira` skill) stating plainly what you were
-doing and exactly what blocked you, so a human can unblock it and the work
-can resume on a later run. This is a normal, expected outcome of hitting the
-edge of what this sandbox can reach - not a failure to hide or apologize for.
+doing and the exact cause of the issue - the literal error, HTTP status, and
+endpoint/host where relevant - so the engineers watching the ticket can
+triage it and figure out what to unblock, and the work can resume on a later
+run. This is a normal, expected outcome of hitting the edge of what this
+sandbox can reach - not a failure to hide or apologize for.
 
 ## 8. Open the PR
 
@@ -171,9 +181,9 @@ comment summarizing what was changed and why.
 - Never skip or weaken the security fan-out in step 6 to save time.
 - Never invent a target repository, a Jira host/email, or any credential -
   if you don't know it, that's a blocker (step 7), not something to guess.
-- Never retry past a `403` - report it (via a ticket comment if it's
-  ticket-specific, via `file_failure_issue` if it's this job's own
-  mechanics) and stop.
+- Never retry past a `403` or any other access issue - report the exact
+  cause (via a ticket comment if it's ticket-specific per step 7, via
+  `file_failure_issue` if it's this job's own mechanics) and stop.
 - One ticket, one PR per run.
 
 ## Failures
