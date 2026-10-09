@@ -113,15 +113,12 @@ RUN set -eux; \
     chown -R sandbox:sandbox /sandbox /tmp/sandbox-cache
 
 # --- directory structure ---
-# /go is GOPATH/GOMODCACHE (see ENV below); it must exist and be writable by
-# the sandbox user or every `go` invocation fails at "mkdir /go".
 RUN set -eux; \
     mkdir -p /etc/openshell \
              /sandbox/.claude \
              /sandbox/.config \
-             /sandbox/.cache/go-build \
-             /go/pkg/mod; \
-    chown -R sandbox:sandbox /sandbox /go
+             /sandbox/.cache/go-build; \
+    chown -R sandbox:sandbox /sandbox
 
 # --- agent skills ---
 # Copy NVIDIA base image skills (e.g. github/SKILL.md) then add our own.
@@ -185,10 +182,11 @@ RUN printf '%s\n' \
     && chown sandbox:sandbox /sandbox/.claude.json
 
 # --- environment ---
-ENV PATH="/usr/local/go/bin:/go/bin:/sandbox/.local/bin:/usr/local/bin:/usr/bin:/bin" \
-    GOPATH=/go \
+# GOPATH/GOMODCACHE are left at Go's defaults ($HOME/go, $HOME/go/pkg/mod):
+# /sandbox is the sandbox user's, PVC-backed home, so the module cache lives
+# next to GOCACHE and persists across runs without a root-owned /go.
+ENV PATH="/usr/local/go/bin:/sandbox/go/bin:/sandbox/.local/bin:/usr/local/bin:/usr/bin:/bin" \
     GOCACHE=/sandbox/.cache/go-build \
-    GOMODCACHE=/go/pkg/mod \
     GOTOOLCHAIN=auto \
     XDG_CACHE_HOME=/tmp/sandbox-cache \
     HOME=/sandbox \
