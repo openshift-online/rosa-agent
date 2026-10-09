@@ -85,12 +85,6 @@ RUN set -eux; \
         jq make gcc findutils which tar gzip diffutils \
         curl-minimal rsync procps-ng \
         npm skopeo; \
-    # libxml2 is a transitive dependency pulled in by the packages above, not
-    # something this image installs directly - pin it forward explicitly so
-    # a stale base-image snapshot doesn't ship a vulnerable build. Fixes
-    # CVE-2026-74860, CVE-2026-86138, CVE-2026-86140, CVE-2026-86142,
-    # CVE-2026-86143, CVE-2026-86144 (RHSA-2026:71585, libxml2-2.9.13-14.el9_8.5).
-    dnf -y update --setopt=install_weak_deps=False --nodocs libxml2; \
     dnf clean all; rm -rf /var/cache/dnf
 
 # --- markdownlint (for documentation review by sub-agents) ---
@@ -105,21 +99,6 @@ COPY --from=builder /usr/local/bin/shellcheck /usr/local/bin/shellcheck
 COPY --from=builder /usr/local/bin/glab /usr/local/bin/glab
 COPY --from=builder /usr/local/bin/openshell /usr/local/bin/openshell
 COPY --from=builder /usr/bin/claude /usr/bin/claude
-
-# --- Go tools via go install (pinned versions, matching boilerplate) ---
-RUN set -eux; \
-    export GOPATH=/go; \
-    export GOFLAGS=-mod=mod; \
-    go install sigs.k8s.io/controller-tools/cmd/controller-gen@v0.22.0; \
-    go install k8s.io/code-generator/cmd/openapi-gen@v0.29.15; \
-    go install go.uber.org/mock/mockgen@v0.4.0; \
-    go install golang.org/x/vuln/cmd/govulncheck@v1.8.0; \
-    go install sigs.k8s.io/controller-runtime/tools/setup-envtest@release-0.23; \
-    # Fix GOPATH permissions for OpenShift arbitrary UID (GID 0 pattern)
-    for bit in r x; do \
-      find /go -perm -u+${bit} -a ! -perm -g+${bit} -exec chmod g+${bit} {} +; \
-    done; \
-    rm -rf /tmp/*
 
 # --- user model (mirrors NVIDIA OpenShell-Community base sandbox) ---
 # HOME=/sandbox matches the NVIDIA base image pattern. The workspace-init
@@ -203,10 +182,11 @@ RUN printf '%s\n' \
     && chown sandbox:sandbox /sandbox/.claude.json
 
 # --- environment ---
-ENV PATH="/usr/local/go/bin:/go/bin:/sandbox/.local/bin:/usr/local/bin:/usr/bin:/bin" \
-    GOPATH=/go \
+# GOPATH/GOMODCACHE are left at Go's defaults ($HOME/go, $HOME/go/pkg/mod):
+# /sandbox is the sandbox user's, PVC-backed home, so the module cache lives
+# next to GOCACHE and persists across runs without a root-owned /go.
+ENV PATH="/usr/local/go/bin:/sandbox/go/bin:/sandbox/.local/bin:/usr/local/bin:/usr/bin:/bin" \
     GOCACHE=/sandbox/.cache/go-build \
-    GOMODCACHE=/go/pkg/mod \
     GOTOOLCHAIN=auto \
     XDG_CACHE_HOME=/tmp/sandbox-cache \
     HOME=/sandbox \
