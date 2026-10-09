@@ -1,0 +1,17 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "packageRules": [
+    {
+      "description": "UBI base-image rebuilds: digest and patch only (not minor - a 9.x.y UBI line bump also moves go-toolset and friends, worth a human look). This is also how base-image-inherited RPM CVEs actually get fixed - see openshift-online/rosa-agent#91.",
+      "matchManagers": ["dockerfile"],
+      "matchUpdateTypes": ["digest", "patch"],
+      "automerge": true
+    },
+    {
+      "description": "Konflux pipeline/task-bundle digest, patch and minor bumps in .tekton/ - validated by the PR's own build before merge, same as the dockerfile rule above. PR #62 shipped a broken task-rpms-signature-scan bundle digest that broke every pipeline run; its own PR-time build check failed, and a human merged it anyway (see #90, #92). Renovate only merges once checks are green, so automerge here is a net safety improvement, not a risk - manual review added latency without adding a gate that would have actually caught #62. Majors stay on manual review.",
+      "matchManagers": ["tekton"],
+      "matchUpdateTypes": ["digest", "patch", "minor"],
+      "automerge": true
+    }
+  ]
+}

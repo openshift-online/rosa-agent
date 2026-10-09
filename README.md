@@ -73,14 +73,26 @@ It defines two things:
       `go get`/`go mod download`/`go test`/`go build` on any module not already in the local cache).
   * **Container registry** — read-only to `quay.io` (Quay API for image manifest/vulnerability
       data via `curl`, and the registry v2 API for manifest/tag/label inspection via `skopeo`;
-      no image pulls or pushes), and to `s3.us-east-1.amazonaws.com` (quay.io's blob-storage
-      backend redirects config-blob fetches here, needed for `skopeo inspect` to read OCI labels).
+      no image pulls or pushes), to `s3.us-east-1.amazonaws.com` (quay.io's blob-storage
+      backend redirects config-blob fetches here, needed for `skopeo inspect` to read OCI labels),
+      and to `registry.access.redhat.com` (same `curl`/`skopeo` manifest/label inspection, needed
+      to verify a candidate Red Hat base-image tag contains a patched RPM before a CVE
+      remediation PR is opened).
+  * **Red Hat errata / security data** — read-only to `access.redhat.com` (confirming which
+      erratum/release fixes a given CVE) and `security.access.redhat.com` (CSAF/VEX advisory
+      data), both via `curl`, needed for the same base-image CVE verification.
   * **Reference / CI** — read-only to Red Hat docs, Konflux, Codecov, and Prow.
 
 Note: Jira egress is intentionally **not** in this baked policy. The `atlassian-jira` provider
 profile composes its own endpoints with two-writes-only (comment + remotelink) method/path
 enforcement; a coarse read-write block here would union over and defeat that restriction. Attach
 the Jira provider to grant Jira access rather than adding it to the policy. WDYT?
+
+Note: PagerDuty egress is intentionally **not** in this baked policy either, for the same reason.
+The `pagerduty` provider profile composes its own read-only incidents/alerts + notes-write-only
+allow-list; PagerDuty's API has no separate scope for "notes write" vs. "incident write", so that
+split only exists at this profile's L7 rules — a coarse block here would defeat it just as surely.
+Attach the pagerduty provider to grant PagerDuty access rather than adding it to the policy.
 
 ### Provider Profiles
 
@@ -93,7 +105,7 @@ openshell provider profile lint -f provider-profiles/<profile>.yaml
 openshell provider profile import -f provider-profiles/<profile>.yaml
 ```
 
-Currently there is one profile:
+Currently there are two profiles:
 
 * **`atlassian-jira.yaml`** — Jira Cloud access for sandboxed agents, with a deliberately narrow
     allow-list:
@@ -112,6 +124,10 @@ Currently there is one profile:
       an opaque, proxy-resolved placeholder inside the sandbox. `JIRA_EMAIL` and `JIRA_BASE_URL` are
       **not** secrets and must be passed as plain `--env` values at sandbox creation time (custom
       profiles have no mechanism to expose `--config` values as sandbox env vars).
+* **`pagerduty.yaml`** — PagerDuty access for sandboxed agents: read-only incidents/alerts, plus
+    read/write incident notes. See the [PagerDuty](#pagerduty) section below for the full scope and
+    why the read/write split is enforced entirely by this profile's allow-list rather than by
+    PagerDuty itself.
 
 ### HyperShell Service Account
 
@@ -360,6 +376,65 @@ Note: Sandboxes must be run with the Config keys as `ENV` variables.  There is n
   --env JIRA_BASE_URL="https://redhat.atlassian.net"      
 ```
 
+## PagerDuty
+
+Grants sandboxed agents read-only access to PagerDuty incidents and alerts, plus read/write access
+to incident notes — e.g. to triage an active incident and leave a note with findings, without being
+able to resolve, reassign, or otherwise mutate the incident itself.
+
+PagerDuty's REST API v2 has no separate scope for "notes write" — a credential capable of writing
+notes is, at the PagerDuty-authorization layer, also capable of general incident mutation
+(`incidents.write` covers both). The read-only/notes-write split this integration actually enforces
+lives entirely in the [`pagerduty` provider profile](#provider-profiles)'s method/path allow-list
+(`provider-profiles/pagerduty.yaml`), the same way the Jira profile enforces its own write scope —
+see the [Policies](#policies) note above.
+
+Auth note: unlike Jira, this profile does **not** use a static API key. PagerDuty's classic
+`Authorization: Token token=<key>` scheme can't be resolved by the sandbox proxy's placeholder
+rewriter (it splits header values on the first whitespace, and `token=<placeholder>` isn't a
+resolvable shape — see the comment at the top of `pagerduty.yaml` for the full explanation). Instead
+the profile uses PagerDuty's Scoped OAuth client-credentials grant, which the gateway mints and
+refreshes itself and sends as a plain `Authorization: Bearer <token>`.
+
+Hypershell Provider config:
+
+```bash
+openshell provider create --name "rosa-agent-pagerduty" --type pagerduty
+
+# Register (or reuse) a Scoped OAuth app in PagerDuty first (Developer Mode /
+# App Registration, with Incidents read+write access) to get these values:
+export PD_CLIENT_ID=$(vault kv get -mount=osd-sre -field="pagerduty-oauth-client-id" rosa-agent)
+export PD_CLIENT_SECRET=$(vault kv get -mount=osd-sre -field="pagerduty-oauth-client-secret" rosa-agent)
+openshell provider refresh configure rosa-agent-pagerduty \
+  --credential-key PAGERDUTY_ACCESS_TOKEN \
+  --strategy oauth2-client-credentials \
+  --material client_id="$PD_CLIENT_ID" \
+  --material client_secret="$PD_CLIENT_SECRET" \
+  --secret-material-key client_secret
+```
+
+Note: The `pagerduty` Provider Profile is a custom profile, defined in this repo at
+`provider-profiles/pagerduty.yaml`. Before importing it, edit its `scopes` list to replace
+`as_account-us.CHANGEME` with your actual `as_account-<region>.<subdomain>` value — PagerDuty
+requires this account-identifying scope on every client-credentials token request. See the
+[Provider Profiles](#provider-profiles) section for a summary of what the profile allows and how to
+import it.
+
+Note: A custom `pagerduty` sandbox skill (`sandbox/skills/pagerduty/SKILL.md`) is baked into the
+image alongside the `jira` skill (see the [Jira](#jira) section below). It teaches the sandbox agent
+the two headers every PagerDuty call needs (`Authorization: Bearer`, not `Token token=`; the
+mandatory `Accept: application/vnd.pagerduty+json;version=2` version header), that `From` is
+required only on note creation, and which operations the profile above actually permits.
+
+Note: PagerDuty requires a `From: <requester-email>` header on note writes, to attribute the note to
+a real PagerDuty user. Like `JIRA_EMAIL`/`JIRA_BASE_URL`, that email is not a secret and is not
+handled by the provider — it must be passed as a plain `ENV` variable when the sandbox is run:
+
+```bash
+  --provider rosa-agent-pagerduty \
+  --env PAGERDUTY_FROM_EMAIL="sd-sre-platform+rosa-agent@redhat.com"
+```
+
 ## Vertex
 
 * ROSA-Agent has a service account under the `rosa-general` GCP account.
@@ -422,3 +497,23 @@ Built from a shared base via a kustomize overlay:
 * [`releaseplan-patch.yaml`](https://gitlab.cee.redhat.com/releng/konflux-release-data/-/blob/main/tenants-config/cluster/kflux-prd-rh02/tenants/rosa-tenant/overlay/rosa-agent/main/releaseplan-patch.yaml)
 * [`integrationtestscenario-patch.yaml`](https://gitlab.cee.redhat.com/releng/konflux-release-data/-/blob/main/tenants-config/cluster/kflux-prd-rh02/tenants/rosa-tenant/overlay/rosa-agent/main/integrationtestscenario-patch.yaml)
 
+### Dependency updates (MintMaker)
+
+Konflux's MintMaker service (Renovate-based) opens the PRs that bump the
+pinned UBI base image (`Containerfile`) and the pinned Konflux pipeline/
+task-bundle digests (`.tekton/`). [`renovate.json`](renovate.json)
+auto-merges both once the PR's own build pipeline passes:
+
+* UBI base-image rebuilds: digest and patch only (not minor - a UBI line
+  bump also moves `go-toolset` and friends, worth a human look). This is
+  also how base-image-inherited RPM CVEs actually get fixed in practice -
+  see [issue #91](https://github.com/openshift-online/rosa-agent/issues/91) -
+  so merging promptly matters more than reviewing each one by hand.
+* `.tekton/` pipeline/task-bundle bumps: digest, patch and minor. PR #62
+  shipped a broken bundle digest that broke every pipeline run and was
+  merged by a human despite its own PR-time build failing (see #90); since
+  Renovate only merges once checks are green, automerging these is a safety
+  improvement over manual review, not a risk.
+
+Everything else MintMaker opens (Go modules, GitHub Actions, major version
+bumps) stays on manual review for now.
