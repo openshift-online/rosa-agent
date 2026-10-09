@@ -422,3 +422,15 @@ Built from a shared base via a kustomize overlay:
 * [`releaseplan-patch.yaml`](https://gitlab.cee.redhat.com/releng/konflux-release-data/-/blob/main/tenants-config/cluster/kflux-prd-rh02/tenants/rosa-tenant/overlay/rosa-agent/main/releaseplan-patch.yaml)
 * [`integrationtestscenario-patch.yaml`](https://gitlab.cee.redhat.com/releng/konflux-release-data/-/blob/main/tenants-config/cluster/kflux-prd-rh02/tenants/rosa-tenant/overlay/rosa-agent/main/integrationtestscenario-patch.yaml)
 
+### Dependency updates (MintMaker)
+
+Konflux's MintMaker service (Renovate-based) opens the PR that bumps the
+pinned UBI base image (`Containerfile`). [`renovate.json`](renovate.json)
+auto-merges its digest and patch updates once the PR's own build pipeline
+passes (not minor - a UBI line bump also moves `go-toolset` and friends,
+worth a human look). This is also how base-image-inherited RPM CVEs actually
+get fixed in practice - see
+[issue #91](https://github.com/openshift-online/rosa-agent/issues/91) - so
+merging promptly matters more than reviewing each one by hand. Everything
+else MintMaker opens (Go modules, GitHub Actions, `.tekton/` pipeline-bundle
+digests, major version bumps) stays on manual review for now.

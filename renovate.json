@@ -1,0 +1,11 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "packageRules": [
+    {
+      "description": "UBI base-image rebuilds: digest and patch only (not minor - a 9.x.y UBI line bump also moves go-toolset and friends, worth a human look). This is also how base-image-inherited RPM CVEs actually get fixed - see openshift-online/rosa-agent#91.",
+      "matchManagers": ["dockerfile"],
+      "matchUpdateTypes": ["digest", "patch"],
+      "automerge": true
+    }
+  ]
+}
