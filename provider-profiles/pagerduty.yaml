@@ -114,7 +114,7 @@ credentials:
     - as_account-us.CHANGEME
     - incidents.read
     - incidents.write
-    refresh_before: "300s"
+    refresh_before_seconds: 300
     material:
     - name: client_id
       description: PagerDuty Scoped OAuth app Client ID
