@@ -64,12 +64,18 @@ spec:
                 - |
                   set -euo pipefail
 
-                  # openshellctl reads OPENSHELL_GATEWAY_ENDPOINT, OPENSHELL_OIDC_ISSUER,
-                  # OPENSHELL_OIDC_CLIENT_ID, OPENSHELL_OIDC_AUDIENCE, and
-                  # OPENSHELL_OIDC_CLIENT_SECRET directly from the environment (see env:
-                  # below) — no manual metadata.json, DNS probe, curl token mint, or
+                  # openshellctl reads OPENSHELL_GATEWAY_ENDPOINT, OPENSHELL_OIDC_CLIENT_ID,
+                  # and OPENSHELL_OIDC_CLIENT_SECRET directly from the environment (see
+                  # env: below) — no manual metadata.json, DNS probe, curl token mint, or
                   # python token writer needed. `gateway add` authenticates via client
                   # credentials as part of registration and sets the gateway active.
+                  # OPENSHELL_OIDC_ISSUER/OPENSHELL_OIDC_AUDIENCE are deliberately NOT
+                  # set: leaving them unset makes `gateway add` discover both from
+                  # "${OPENSHELL_GATEWAY_ENDPOINT}/auth/oidc-config" and register
+                  # exactly what the gateway reports, so `doctor`'s later OIDC config
+                  # match check compares the gateway against itself instead of
+                  # against a hardcoded value that could drift (review feedback,
+                  # rosa-agent#94).
                   echo "=== Step 1: Register the gateway and authenticate ==="
                   openshellctl gateway add "${OPENSHELL_GATEWAY_ENDPOINT}" --name "${OPENSHELL_GATEWAY}"
 
@@ -107,12 +113,8 @@ spec:
                   value: "ROSA Agentic Devx-rosa-agent"
                 - name: OPENSHELL_GATEWAY_ENDPOINT
                   value: "https://gw-openshell-46b2dff2b7232948.openshell.stage.devshift.net:443"
-                - name: OPENSHELL_OIDC_ISSUER
-                  value: "https://keycloak-ambient-keycloak.apps.rosa.hcmais01ue1.s9m2.p3.openshiftapps.com/realms/ambient-code"
                 - name: OPENSHELL_OIDC_CLIENT_ID
                   value: "hs-sa-3I94YwZezpdI4AEzuxtJnsVYGVt-3J3ccZA4F2wyrrGaIHorqtywaiL"
-                - name: OPENSHELL_OIDC_AUDIENCE
-                  value: "ROSA Agentic Devx-3I94YwZezpdI4AEzuxtJnsVYGVt"
                 - name: NAME
                   value: sop-improve
                 - name: PROMPT

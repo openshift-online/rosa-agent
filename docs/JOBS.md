@@ -60,10 +60,15 @@ the `Scheduled jobs` comment in the `Makefile`). Each has a dedicated
 (see below) from that Secret.
 
 `openshellctl` reads its gateway/OIDC configuration directly from the
-environment — `OPENSHELL_GATEWAY_ENDPOINT`, `OPENSHELL_OIDC_ISSUER`,
-`OPENSHELL_OIDC_CLIENT_ID`, `OPENSHELL_OIDC_AUDIENCE`, and
+environment — `OPENSHELL_GATEWAY_ENDPOINT`, `OPENSHELL_OIDC_CLIENT_ID`, and
 `OPENSHELL_OIDC_CLIENT_SECRET` — and mints/refreshes its own OIDC token via
-client-credentials as part of `gateway add`. This replaced an earlier
+client-credentials as part of `gateway add`. The OIDC issuer and audience are
+deliberately *not* set as env vars: leaving `OPENSHELL_OIDC_ISSUER`/
+`OPENSHELL_OIDC_AUDIENCE` unset makes `gateway add` discover both from
+`<endpoint>/auth/oidc-config` and register exactly what the gateway itself
+reports, so `openshellctl doctor`'s later OIDC config match check compares
+the gateway against itself rather than against a hardcoded value that could
+drift out of sync. This replaced an earlier
 bash/curl/python reimplementation of that same logic (handwritten gateway
 `metadata.json`, a manual DNS probe, a `curl`+`python3` token mint, and an
 error-swallowing `openshell sandbox delete "$NAME" || true`) with native
