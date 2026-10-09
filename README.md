@@ -424,13 +424,21 @@ Built from a shared base via a kustomize overlay:
 
 ### Dependency updates (MintMaker)
 
-Konflux's MintMaker service (Renovate-based) opens the PR that bumps the
-pinned UBI base image (`Containerfile`). [`renovate.json`](renovate.json)
-auto-merges its digest and patch updates once the PR's own build pipeline
-passes (not minor - a UBI line bump also moves `go-toolset` and friends,
-worth a human look). This is also how base-image-inherited RPM CVEs actually
-get fixed in practice - see
-[issue #91](https://github.com/openshift-online/rosa-agent/issues/91) - so
-merging promptly matters more than reviewing each one by hand. Everything
-else MintMaker opens (Go modules, GitHub Actions, `.tekton/` pipeline-bundle
-digests, major version bumps) stays on manual review for now.
+Konflux's MintMaker service (Renovate-based) opens the PRs that bump the
+pinned UBI base image (`Containerfile`) and the pinned Konflux pipeline/
+task-bundle digests (`.tekton/`). [`renovate.json`](renovate.json)
+auto-merges both once the PR's own build pipeline passes:
+
+* UBI base-image rebuilds: digest and patch only (not minor - a UBI line
+  bump also moves `go-toolset` and friends, worth a human look). This is
+  also how base-image-inherited RPM CVEs actually get fixed in practice -
+  see [issue #91](https://github.com/openshift-online/rosa-agent/issues/91) -
+  so merging promptly matters more than reviewing each one by hand.
+* `.tekton/` pipeline/task-bundle bumps: digest, patch and minor. PR #62
+  shipped a broken bundle digest that broke every pipeline run and was
+  merged by a human despite its own PR-time build failing (see #90); since
+  Renovate only merges once checks are green, automerging these is a safety
+  improvement over manual review, not a risk.
+
+Everything else MintMaker opens (Go modules, GitHub Actions, major version
+bumps) stays on manual review for now.
