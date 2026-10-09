@@ -73,8 +73,14 @@ It defines two things:
       `go get`/`go mod download`/`go test`/`go build` on any module not already in the local cache).
   * **Container registry** — read-only to `quay.io` (Quay API for image manifest/vulnerability
       data via `curl`, and the registry v2 API for manifest/tag/label inspection via `skopeo`;
-      no image pulls or pushes), and to `s3.us-east-1.amazonaws.com` (quay.io's blob-storage
-      backend redirects config-blob fetches here, needed for `skopeo inspect` to read OCI labels).
+      no image pulls or pushes), to `s3.us-east-1.amazonaws.com` (quay.io's blob-storage
+      backend redirects config-blob fetches here, needed for `skopeo inspect` to read OCI labels),
+      and to `registry.access.redhat.com` (same `curl`/`skopeo` manifest/label inspection, needed
+      to verify a candidate Red Hat base-image tag contains a patched RPM before a CVE
+      remediation PR is opened).
+  * **Red Hat errata / security data** — read-only to `access.redhat.com` (confirming which
+      erratum/release fixes a given CVE) and `security.access.redhat.com` (CSAF/VEX advisory
+      data), both via `curl`, needed for the same base-image CVE verification.
   * **Reference / CI** — read-only to Red Hat docs, Konflux, Codecov, and Prow.
 
 Note: Jira egress is intentionally **not** in this baked policy. The `atlassian-jira` provider
