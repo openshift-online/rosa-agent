@@ -20,6 +20,11 @@
 #   catch-all POST/PUT/PATCH, since that's where real damage is possible.
 #
 # Import:
+#   Edit the `scopes` list near the bottom FIRST - replace
+#   `as_account-us.CHANGEME` with your actual `as_account-<region>.<subdomain>`
+#   (see step 4 below for details). `lint` only checks schema shape, not
+#   scope content, so it will pass with the placeholder still in place - but
+#   every OAuth token request will then fail once imported.
 #   openshell provider profile lint -f provider-profiles/pagerduty.yaml
 #   openshell provider profile import -f provider-profiles/pagerduty.yaml
 #
