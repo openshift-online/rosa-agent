@@ -422,3 +422,14 @@ Built from a shared base via a kustomize overlay:
 * [`releaseplan-patch.yaml`](https://gitlab.cee.redhat.com/releng/konflux-release-data/-/blob/main/tenants-config/cluster/kflux-prd-rh02/tenants/rosa-tenant/overlay/rosa-agent/main/releaseplan-patch.yaml)
 * [`integrationtestscenario-patch.yaml`](https://gitlab.cee.redhat.com/releng/konflux-release-data/-/blob/main/tenants-config/cluster/kflux-prd-rh02/tenants/rosa-tenant/overlay/rosa-agent/main/integrationtestscenario-patch.yaml)
 
+### Dependency updates (MintMaker)
+
+Konflux's MintMaker service (Renovate-based) opens the PRs that bump the pinned
+UBI base image (`Containerfile`) and the pinned Konflux pipeline/task-bundle
+digests (`.tekton/`). [`renovate.json`](renovate.json) auto-merges both of
+those families once the PR's own build pipeline passes - they're already
+validated by that build, so manual review only added latency. Everything else
+MintMaker opens (Go modules, GitHub Actions, major version bumps) stays on
+manual review. See [issue #91](https://github.com/openshift-online/rosa-agent/issues/91)
+for why: auto-merging these is also how base-image-inherited CVEs actually get
+fixed in practice, faster than a per-package `job-image-vuln-check` PR can.

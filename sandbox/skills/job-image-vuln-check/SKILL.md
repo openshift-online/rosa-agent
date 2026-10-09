@@ -1,6 +1,6 @@
 ---
 name: job-image-vuln-check
-description: Nightly job that checks a quay.io image for fixable CVEs and remediates them via PR. Retrieval is deterministic (wraps quay-vuln-report); remediation is agent-driven inference (locate the pin, verify a real fix exists, never downgrade, test before/after, split fix and new-tests into separate PRs). Before fixing each CVE-fix bucket, checks for an already-open PR covering it: exits with no action if it's the same CVE set, supersedes (new PR, close+reference old) if new CVEs joined the same still-open bucket. Also closes any already-open PR for an image whose CVEs are no longer present in the latest scan at all (e.g. an unrelated base-image bump already fixed them), so stale fix PRs don't linger. Use when asked to run the image vuln-check job, check an image for CVEs and fix them, or when triggered by a cron/scheduled invocation referencing job-image-vuln-check. Trigger keywords - image vuln check, nightly CVE job, fixable vulnerabilities, remediate CVE, job-image-vuln-check.
+description: Nightly job that checks a quay.io image for fixable CVEs and remediates them via PR. Retrieval is deterministic (wraps quay-vuln-report); remediation is agent-driven inference (locate the pin, verify a real fix exists, never downgrade, test before/after, split fix and new-tests into separate PRs). Before remediating, triages base-image-inherited CVEs separately from repo-pinned ones: never opens a versionless `dnf update` forward-pin PR for a package the base image itself owns, since the base image's own rebuild almost always ships the fix first - only acts on those past an age grace period, and checks the scan is of the repo's actual HEAD first. Before fixing each repo-owned CVE-fix bucket, checks for an already-open PR covering it: exits with no action if it's the same CVE set, supersedes (new PR, close+reference old) if new CVEs joined the same still-open bucket. Also closes any already-open PR for an image whose CVEs are no longer present in the latest scan at all (e.g. an unrelated base-image bump already fixed them), so stale fix PRs don't linger. Use when asked to run the image vuln-check job, check an image for CVEs and fix them, or when triggered by a cron/scheduled invocation referencing job-image-vuln-check. Trigger keywords - image vuln check, nightly CVE job, fixable vulnerabilities, remediate CVE, job-image-vuln-check.
 ---
 
 # Job: check a quay.io image for fixable CVEs and remediate them
@@ -81,7 +81,7 @@ UPSTREAM=<owner/repo> FORK_OWNER=<your-account> IMAGE=<image-ref> \
   this image at all").
 - A PR with a **partial** overlap (some of its CVEs still present, some
   gone) is left untouched here - that bucket is still live. It goes through
-  the step-0 dedup/supersede check in step 5 when it's reprocessed, not this
+  the step-0 dedup/supersede check in step 6 when it's reprocessed, not this
   script. Never close a PR on a partial match.
 - `CURRENT_CVES` may legitimately be empty - that means this run found zero
   fixable CVEs on the image at all, so every open marked PR for it is
@@ -89,11 +89,77 @@ UPSTREAM=<owner/repo> FORK_OWNER=<your-account> IMAGE=<image-ref> \
 - **Exit 2**: a failure Issue was already filed by the script for this
   target - stop, don't retry.
 
-## 5. Remediate, one CVE-fix at a time
+## 5. Triage: is this CVE actually the repo's to fix?
 
-For each independently-fixable vulnerability (group multiple CVE IDs that
-share the same package+fixed-version+layer into one fix - this grouping is
-the "bucket" referred to below):
+Before remediating any bucket, decide whether it's something this repo
+controls, or something it only inherits from its base image. This
+distinction exists because of real precedent (see
+[openshift-online/rosa-agent#91](https://github.com/openshift-online/rosa-agent/issues/91)):
+PRs #77 and #78 forward-pinned `gdb-gdbserver` and `gawk` via `dnf -y update
+<pkg>` - a "pin" to no particular version, i.e. just "whatever's newest right
+now" - and both were already redundant the moment they were opened, because
+the UBI base image had shipped the fixed RPM *days* before the PR merged.
+The base image almost always wins that race: in the cases checked, Red Hat's
+errata-to-UBI-image lag was only ~4-6 days, well inside the review/merge
+cycle for a bot-opened PR.
+
+For each bucket:
+
+- **Is the package something the repo's own Containerfile/go.mod/
+  requirements.txt explicitly installs or pins a version of** (an `ARG`, a
+  `go install foo@version`, a `pip install foo==version`, an explicit `dnf
+  install <pkg>-<version>`)? If yes, this is the repo's to fix - skip ahead
+  to step 6 below (this is the #79/#80/#87 case: `govulncheck`,
+  `setup-envtest`, `golangci-lint` versions the Containerfile pins directly).
+- **Otherwise, it's base-image-inherited** (it rode in via `FROM
+  registry.../ubi9/ubi:<tag>` with no explicit version pin of its own - the
+  #77/#78 case). For these, **never open a `dnf -y update <pkg>` forward-pin
+  PR** - it doesn't name a version, so it isn't a real pin, and it's racing
+  an image rebuild that's already ahead of it more often than not. Instead:
+  1. Resolve the base image tag actually pinned in the target repo's
+     Containerfile **at the target repo's current default-branch HEAD**
+     (not a stale fork, not this run's local checkout from before `sync_fork.sh`
+     - re-read it after syncing). Confirm the image used for *this* scan
+     matches that HEAD (see the HEAD-staleness check at the end of this
+     section) before trusting the scan result at all.
+  2. Check whether that pinned base image already contains a version of the
+     package that meets `fixed_in_version` (e.g. via the Red Hat Catalog's
+     package listing for that image tag, or `skopeo`/`curl` against
+     `registry.access.redhat.com` / `access.redhat.com`, per the egress this
+     repo already allow-lists for exactly this purpose). If it already has
+     the fix: **no PR** - report "already fixed in the pinned base image at
+     HEAD" for this bucket and move on. Don't let a trailing scan of a
+     not-yet-rebuilt `:latest` tag fool you into re-litigating this.
+  3. If the base image does **not** yet have the fix, only act once the
+     errata is older than a grace period - otherwise skip it for now and
+     say so. Use Red Hat's own Container Health Index grace periods as the
+     threshold: ~7 days for Critical, ~30 days for Important; don't open a
+     PR for Moderate/Low base-image-inherited CVEs at all (Red Hat's grading
+     doesn't count them either). Once a CVE does cross its threshold without
+     the base image catching up, that's worth a human-visible report (not
+     a forward-pin PR, which still won't survive the next base-image bump)
+     - file it as a note in the run summary rather than opening a PR.
+
+**Check the scan is actually of `HEAD` before triaging anything.** The
+scanner reads the *released* `:latest` tag, which only moves forward when a
+release pipeline actually succeeds - a stuck pipeline means `:latest` can
+sit on an old, already-superseded image indefinitely while still reporting
+CVEs that are long since fixed on `main` (this is almost certainly what
+happened with #77/#78: #90 fixed a broken Tekton bundle pin that was very
+likely blocking releases). Compare the scanned image's own revision/commit
+label (e.g. `org.opencontainers.image.revision` - check the image's labels
+via `skopeo inspect`, the same approach `repo_resolver.py` uses for the
+source-repo label, just a different key) against the target repo's
+current default-branch HEAD commit. If they differ, the scan is stale by
+definition - file a failure/staleness report via `file_failure_issue`
+instead of opening CVE PRs against a commit nobody's shipped yet, and stop
+remediating this target for the run.
+
+## 6. Remediate, one CVE-fix at a time
+
+For buckets that passed step 5 as the repo's own to fix (group multiple CVE
+IDs that share the same package+fixed-version+layer into one fix - this
+grouping is the "bucket" referred to below):
 
 0. Check whether an open PR already covers this exact bucket before doing
    any work on it:
@@ -170,11 +236,16 @@ Repeat per fixable CVE bucket. One fix per PR - never batch.
 
 - Never downgrade. Never batch multiple fixes in one PR. Never force-push.
 - Never open a duplicate PR for a bucket an open PR already covers with the
-  identical CVE set (step 5's step 0) - and never close an existing PR
+  identical CVE set (step 6's step 0) - and never close an existing PR
   unless its CVE set is a confirmed strict subset of the new one (a real
   supersede, not a guess).
 - Never close a PR via step 4 on a partial CVE match - only when none of its
   CVEs appear in the current scan at all.
+- Never open a `dnf -y update <pkg>` forward-pin PR for a base-image-
+  inherited package (step 5) - it names no version, so it isn't a real pin,
+  and it almost never beats the base image's own rebuild. Only repo-pinned
+  versions (Containerfile `ARG`, `go install @version`, `requirements.txt`,
+  etc.) are legitimate remediation targets.
 - Verify version/evidence claims against something real - never invent one.
 - Never print, commit, or put a literal credential anywhere - only the
   `openshell:resolve:env:*` / `${GITHUB_TOKEN}`-style placeholders already
