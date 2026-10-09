@@ -47,8 +47,9 @@ skills live under `sandbox/skills/`.
 
 ## Scheduled jobs
 
-Three plain `batch/v1` CronJobs run the agent itself (registering the Hypershell
-gateway, minting an OIDC token, then `openshell sandbox create ... -- claude
+Three plain `batch/v1` CronJobs run the agent itself via `openshellctl`
+(`openshellctl gateway add`, `openshellctl doctor` as a preflight, then
+`openshellctl sandbox create --replace ... -- claude
 --dangerously-skip-permissions --print "<job skill invocation>"`), applied
 directly to the `rosa-agent-stage` namespace with `oc apply -f` rather than
 through Konflux — Konflux's build clusters can't currently reach the
@@ -57,6 +58,23 @@ the `Scheduled jobs` comment in the `Makefile`). Each has a dedicated
 `ServiceAccount` scoped to `get` the `openshell-oidc` Secret and
 `get`/`list`/`watch` `batch` jobs, and consumes `OPENSHELL_OIDC_CLIENT_SECRET`
 (see below) from that Secret.
+
+`openshellctl` reads its gateway/OIDC configuration directly from the
+environment — `OPENSHELL_GATEWAY_ENDPOINT`, `OPENSHELL_OIDC_ISSUER`,
+`OPENSHELL_OIDC_CLIENT_ID`, `OPENSHELL_OIDC_AUDIENCE`, and
+`OPENSHELL_OIDC_CLIENT_SECRET` — and mints/refreshes its own OIDC token via
+client-credentials as part of `gateway add`. This replaced an earlier
+bash/curl/python reimplementation of that same logic (handwritten gateway
+`metadata.json`, a manual DNS probe, a `curl`+`python3` token mint, and an
+error-swallowing `openshell sandbox delete "$NAME" || true`) with native
+`openshellctl` support: `gateway add` for registration/auth, `doctor` as an
+explicit preflight (fails fast on a bad `providerRefs` name before any
+sandbox is created), and `sandbox create --replace` to safely replace a
+leftover sandbox from a prior run instead of swallowing its delete error.
+openshellctl's own `--vault-kv-mount`/`--vault-kv-path` flags are not used
+here — these Pods have no network path to Vault; `OPENSHELL_OIDC_CLIENT_SECRET`
+still arrives as a plain env var sourced from the `openshell-oidc` Secret
+(see [Vault-injected credential](#vault-injected-credential) below).
 
 `image-vuln-check` is the one exception to "one CronJob = one Pod per firing": its
 `jobTemplate` uses `completionMode: Indexed` with `completions`/`parallelism` set to the

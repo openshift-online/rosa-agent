@@ -124,67 +124,32 @@ spec:
                   echo "TARGET_REPOSITORY=${TARGET_REPOSITORY}"
                   echo "NAME=${NAME}"
 
-                  echo "=== Step 1: Register the OpenShell gateway ==="
-                  GW_DIR="${HOME}/.config/openshell/gateways/${GW_NAME}"
-                  echo "GW_DIR=${GW_DIR}"
-                  mkdir -p "${GW_DIR}"
-                  cat > "${GW_DIR}/metadata.json" <<GWEOF
-                  {
-                    "name": "${GW_NAME}",
-                    "gateway_endpoint": "${GW_ENDPOINT}",
-                    "is_remote": true,
-                    "gateway_port": 0,
-                    "auth_mode": "oidc",
-                    "oidc_issuer": "${OIDC_ISSUER}",
-                    "oidc_client_id": "${OIDC_CLIENT_ID}",
-                    "oidc_audience": "${OIDC_AUDIENCE}"
-                  }
-                  GWEOF
-                  chmod 600 "${GW_DIR}/metadata.json"
-                  echo "Gateway metadata written"
-                  cat "${GW_DIR}/metadata.json"
+                  # openshellctl reads OPENSHELL_GATEWAY_ENDPOINT, OPENSHELL_OIDC_ISSUER,
+                  # OPENSHELL_OIDC_CLIENT_ID, OPENSHELL_OIDC_AUDIENCE, and
+                  # OPENSHELL_OIDC_CLIENT_SECRET directly from the environment (see env:
+                  # below) — no manual metadata.json, DNS probe, curl token mint, or
+                  # python token writer needed. `gateway add` authenticates via client
+                  # credentials as part of registration and sets the gateway active.
+                  # HOME=/tmp is this Pod's own filesystem, so concurrent sibling pods
+                  # (one per target index) never share or race this registration.
+                  echo "=== Step 1: Register the gateway and authenticate ==="
+                  openshellctl gateway add "${OPENSHELL_GATEWAY_ENDPOINT}" --name "${OPENSHELL_GATEWAY}"
 
-                  echo "=== Step 2: Test DNS resolution ==="
-                  OIDC_HOST=$(echo "${OIDC_ISSUER}" | sed 's|https://||' | sed 's|/.*||')
-                  echo "Resolving ${OIDC_HOST}..."
-                  getent hosts "${OIDC_HOST}" || echo "DNS resolution FAILED for ${OIDC_HOST}"
+                  # Confirms reachability, a valid/current token, and (since
+                  # providerRefs are passed below) that every provider this job
+                  # needs actually exists — before any sandbox is created.
+                  echo "=== Step 2: Preflight (doctor) ==="
+                  openshellctl doctor \
+                    --provider rosa-agent-github \
+                    --provider rosa-agent-jira \
+                    --provider rosa-general-vertex
 
-                  GW_HOST=$(echo "${GW_ENDPOINT}" | sed 's|https://||' | sed 's|:.*||')
-                  echo "Resolving ${GW_HOST}..."
-                  getent hosts "${GW_HOST}" || echo "DNS resolution FAILED for ${GW_HOST}"
-
-                  echo "=== Step 3: Mint OIDC access token ==="
-                  echo "Posting to: ${OIDC_ISSUER}/protocol/openid-connect/token"
-                  printf '%s' "${OPENSHELL_OIDC_CLIENT_SECRET}" | \
-                    curl --fail --silent --show-error --connect-timeout 15 --max-time 30 \
-                      --request POST "${OIDC_ISSUER}/protocol/openid-connect/token" \
-                      --header 'Content-Type: application/x-www-form-urlencoded' \
-                      --data-urlencode 'grant_type=client_credentials' \
-                      --data-urlencode "client_id=${OIDC_CLIENT_ID}" \
-                      --data-urlencode 'client_secret@-' | \
-                    python3 -c "
-                  import json, os, sys
-                  token = json.load(sys.stdin)['access_token']
-                  path = os.path.join('${GW_DIR}', 'oidc_token.json')
-                  with open(path, 'w') as f:
-                      json.dump({
-                          'access_token': token,
-                          'issuer': '${OIDC_ISSUER}',
-                          'client_id': '${OIDC_CLIENT_ID}',
-                      }, f)
-                  os.chmod(path, 0o600)
-                  print('token minted successfully', file=sys.stderr)
-                  "
-                  echo "Token file written"
-
-                  echo "=== Step 4: Verify authentication ==="
-                  openshell -g "${GW_NAME}" whoami
-
-                  echo "=== Step 5: Clean up stale sandbox ==="
-                  openshell -g "${GW_NAME}" sandbox delete "${NAME}" || true
-
-                  echo "=== Step 6: Create and run sandbox ==="
-                  openshell -g "${GW_NAME}" sandbox create \
+                  # --replace deletes-and-waits-for-gone any sandbox left over from a
+                  # prior run (e.g. a timed-out pod) before creating, surfacing a real
+                  # error instead of silently racing a deletion still in flight.
+                  echo "=== Step 3: Replace and create the sandbox ==="
+                  openshellctl sandbox create \
+                    --replace \
                     --name "${NAME}" \
                     --from "${IMAGE}" \
                     --provider rosa-agent-github \
@@ -200,15 +165,15 @@ spec:
               env:
                 - name: HOME
                   value: /tmp
-                - name: GW_NAME
+                - name: OPENSHELL_GATEWAY
                   value: "ROSA Agentic Devx-rosa-agent"
-                - name: GW_ENDPOINT
+                - name: OPENSHELL_GATEWAY_ENDPOINT
                   value: "https://gw-openshell-46b2dff2b7232948.openshell.stage.devshift.net:443"
-                - name: OIDC_ISSUER
+                - name: OPENSHELL_OIDC_ISSUER
                   value: "https://keycloak-ambient-keycloak.apps.rosa.hcmais01ue1.s9m2.p3.openshiftapps.com/realms/ambient-code"
-                - name: OIDC_CLIENT_ID
+                - name: OPENSHELL_OIDC_CLIENT_ID
                   value: "hs-sa-3I94YwZezpdI4AEzuxtJnsVYGVt-3J3ccZA4F2wyrrGaIHorqtywaiL"
-                - name: OIDC_AUDIENCE
+                - name: OPENSHELL_OIDC_AUDIENCE
                   value: "ROSA Agentic Devx-3I94YwZezpdI4AEzuxtJnsVYGVt"
                 - name: IMAGE
                   # Sandbox base image (this job's own tooling), not the
