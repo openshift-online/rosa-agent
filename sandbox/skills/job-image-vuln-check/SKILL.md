@@ -144,12 +144,16 @@ Instead:
    already has the fix: **no PR** - report "already fixed in the pinned
    base image at HEAD" and move on.
 3. If the pinned tag does **not** have the fix, check whether a **newer**
-   UBI tag exists that does. If so, and a MintMaker/Renovate PR is already
-   open bumping toward (or past) that tag: the action is **"merge PR #NN"**,
-   not a new PR and not a wait - say so explicitly. If no such PR exists
-   yet, there's genuinely nothing to do until Red Hat ships it.
-4. If no tag anywhere has the fix yet, or step 2 is blocked by missing
-   egress, wait - escalate only once the errata is older than a grace
+   UBI tag exists that does, and whether a MintMaker/Renovate PR is already
+   open bumping toward (or past) that tag. If one is: **this bucket is
+   already being handled - do nothing.** Same rule as an already-open
+   `job-image-vuln-check` PR elsewhere in this skill: don't comment on it,
+   don't open anything, don't escalate it, don't mention it in a report.
+   Move on silently. If no newer tag has the fix yet, or one does but
+   nothing is open to get there, there's genuinely nothing actionable until
+   Red Hat ships it or MintMaker opens its own PR.
+4. If no tag anywhere has the fix yet, and nothing is already open to
+   deliver one, wait - escalate only once the errata is older than a grace
    period. Use Red Hat's own Container Health Index grace periods as the
    threshold: ~7 days for Critical, ~30 days for Important; never escalate
    Moderate/Low RPM CVEs (Red Hat's own grading doesn't count them either).
