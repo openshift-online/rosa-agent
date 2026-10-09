@@ -113,12 +113,15 @@ RUN set -eux; \
     chown -R sandbox:sandbox /sandbox /tmp/sandbox-cache
 
 # --- directory structure ---
+# /go is GOPATH/GOMODCACHE (see ENV below); it must exist and be writable by
+# the sandbox user or every `go` invocation fails at "mkdir /go".
 RUN set -eux; \
     mkdir -p /etc/openshell \
              /sandbox/.claude \
              /sandbox/.config \
-             /sandbox/.cache/go-build; \
-    chown -R sandbox:sandbox /sandbox
+             /sandbox/.cache/go-build \
+             /go/pkg/mod; \
+    chown -R sandbox:sandbox /sandbox /go
 
 # --- agent skills ---
 # Copy NVIDIA base image skills (e.g. github/SKILL.md) then add our own.
