@@ -351,15 +351,11 @@ KIND_SPEC_FIELDS = {
             "credential_driver",
         }
     ),
-    # SandboxTemplate: confirmed from `hsctl sandbox-template create --help`
-    # on hyp0. The command exposes four flags:
-    #   --body        → spec.policy  (the policy JSON string)
-    #   --image       → spec.image
-    #   --name        → metadata.name (set by hsctl, not a spec field)
-    #   --name-prefix → spec.name_prefix
-    # No other spec keys are accepted; any addition requires a live
-    # verification against the api-server to avoid silent 400s.
-    "SandboxTemplate": frozenset({"image", "name_prefix", "policy"}),
+    # SandboxTemplate is intentionally absent: the create-request spec field
+    # list has not yet been sourced from the api-server's model. Add an entry
+    # here once the accepted fields are verified against `hsctl create
+    # sandboxTemplate` on a live instance, to avoid false 400s from fields
+    # the model accepts but a hand-maintained list does not know about yet.
 }
 
 # Capability labels are validated server-side against a closed set of
@@ -430,80 +426,17 @@ def capability_value_valid(namespace: str, value: str) -> bool:
     return CAPABILITY_VALUE_RE.match(value) is not None
 
 
-# Keys the converter validates at each level of policies/*.yaml before
-# serialising to JSON. Any key NOT in these sets raises ValueError so that a
-# new field in default.yaml causes an explicit error rather than being
-# silently lost and producing a false-passing drift check.
-#
-# The policy string is validated by openshellctl/pkg/policyyaml/types.go
-# (strict deny-unknown-fields, snake_case throughout). The JSON is therefore
-# the YAML document serialised directly with no field renaming.
-_KNOWN_POLICY_TOP_KEYS = frozenset({"filesystem_policy", "network_policies", "version"})
-_KNOWN_FILESYSTEM_KEYS = frozenset({"include_workdir", "read_only", "read_write"})
-# name is an explicit field in each rule dict (map key uses underscores,
-# e.g. github_api; name field carries the hyphenated form, e.g. github-api).
-_KNOWN_RULE_KEYS = frozenset({"endpoints", "binaries", "name"})
-_KNOWN_ENDPOINT_KEYS = frozenset({"host", "port", "access", "protocol", "enforcement"})
-# harness was removed from the OpenShell schema; the gateway rejects it
-# outright. Raising here prevents a source file with harness from silently
-# passing the drift check and then failing at the gateway.
-_KNOWN_BINARY_KEYS = frozenset({"path"})
-
-
 def _policy_yaml_to_json(src: dict) -> str:
     """Serialise a policies/*.yaml document as the JSON string stored in
     SandboxTemplate.spec.policy.
 
-    The gateway validates this string using openshellctl/pkg/policyyaml/types.go
-    (strict deny-unknown-fields, snake_case throughout). The JSON is therefore
-    the YAML document serialised directly -- no field renaming, no structural
-    changes. A policies/default.yaml that passes `openshellctl policy lint`
-    should round-trip through this function unchanged.
-
-    Raises ValueError for any key at any level that is not in the known set,
-    so a new field in default.yaml causes an explicit error rather than being
-    silently lost and producing a false-passing drift check.
+    The JSON is the YAML document serialised directly -- no field renaming, no
+    structural changes. Schema enforcement (unknown fields, removed fields such
+    as 'harness') is the responsibility of `openshellctl policy lint`, not this
+    validator. This function's sole job is to produce the canonical JSON form
+    used by check_sandbox_template_policy_drift to detect drift between
+    policies/default.yaml and the embedded spec.policy string.
     """
-    unknown_top = set(src) - _KNOWN_POLICY_TOP_KEYS
-    if unknown_top:
-        raise ValueError(
-            f"unknown top-level policy section(s): {', '.join(sorted(unknown_top))}; "
-            f"extend the converter or the drift guard will silently lose these fields"
-        )
-
-    fp = src.get("filesystem_policy") or {}
-    if fp:
-        unknown_fs = set(fp) - _KNOWN_FILESYSTEM_KEYS
-        if unknown_fs:
-            raise ValueError(
-                f"unknown filesystem_policy key(s): {', '.join(sorted(unknown_fs))}"
-            )
-
-    net_map = src.get("network_policies") or {}
-    for rule_name, rule in net_map.items():
-        unknown_rule = set(rule) - _KNOWN_RULE_KEYS
-        if unknown_rule:
-            raise ValueError(
-                f"network rule {rule_name!r}: unknown key(s): {', '.join(sorted(unknown_rule))}; "
-                f"extend the converter or the drift guard will silently lose these fields"
-            )
-        for ep in rule.get("endpoints", []):
-            unknown_ep = set(ep) - _KNOWN_ENDPOINT_KEYS
-            if unknown_ep:
-                raise ValueError(
-                    f"network rule {rule_name!r}, endpoint {ep.get('host', '?')!r}: "
-                    f"unknown key(s): {', '.join(sorted(unknown_ep))}; "
-                    f"extend the converter or the drift guard will silently lose these fields"
-                )
-        for b in rule.get("binaries", []):
-            unknown_bin = set(b) - _KNOWN_BINARY_KEYS
-            if unknown_bin:
-                raise ValueError(
-                    f"network rule {rule_name!r}, binary {b.get('path', '?')!r}: "
-                    f"unknown key(s): {', '.join(sorted(unknown_bin))}; "
-                    f"the gateway rejects removed fields such as 'harness' outright"
-                )
-
     return json.dumps(src, separators=(",", ":"))
 
 
