@@ -51,7 +51,7 @@ RUN set -eux; \
     curl -fsSLo /tmp/openshellctl_checksums.txt \
       "https://github.com/openshift-online/openshellctl/releases/download/v${OPENSHELLCTL_VERSION}/openshellctl_${OPENSHELLCTL_VERSION}_checksums.txt"; \
     grep "openshellctl_Linux_${OSC_ARCH}.tar.gz" /tmp/openshellctl_checksums.txt | (cd /tmp && sha256sum --check); \
-    tar -C /tmp -xzf "/tmp/openshellctl_Linux_${OSC_ARCH}.tar.gz" openshellctl; \
+    tar --no-same-owner -C /tmp -xzf "/tmp/openshellctl_Linux_${OSC_ARCH}.tar.gz" openshellctl; \
     install -m0755 /tmp/openshellctl /usr/local/bin/openshellctl; \
     # --- cleanup ---
     rm -rf /tmp/*
