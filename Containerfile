@@ -46,12 +46,12 @@ RUN set -eux; \
     # --- openshellctl ---
     OSC_ARCH="${ARCH}"; \
     if [ "${OSC_ARCH}" = "amd64" ]; then OSC_ARCH="x86_64"; fi; \
-    curl -fsSLo /tmp/openshellctl.tar.gz \
+    curl -fsSLo "/tmp/openshellctl_Linux_${OSC_ARCH}.tar.gz" \
       "https://github.com/openshift-online/openshellctl/releases/download/v${OPENSHELLCTL_VERSION}/openshellctl_Linux_${OSC_ARCH}.tar.gz"; \
     curl -fsSLo /tmp/openshellctl_checksums.txt \
       "https://github.com/openshift-online/openshellctl/releases/download/v${OPENSHELLCTL_VERSION}/openshellctl_${OPENSHELLCTL_VERSION}_checksums.txt"; \
-    grep "openshellctl_Linux_${OSC_ARCH}.tar.gz" /tmp/openshellctl_checksums.txt | sha256sum --check; \
-    tar -C /tmp -xzf /tmp/openshellctl.tar.gz openshellctl; \
+    grep "openshellctl_Linux_${OSC_ARCH}.tar.gz" /tmp/openshellctl_checksums.txt | (cd /tmp && sha256sum --check); \
+    tar -C /tmp -xzf "/tmp/openshellctl_Linux_${OSC_ARCH}.tar.gz" openshellctl; \
     install -m0755 /tmp/openshellctl /usr/local/bin/openshellctl; \
     # --- cleanup ---
     rm -rf /tmp/*
