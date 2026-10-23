@@ -666,13 +666,13 @@ class TestGenerateHypershell(unittest.TestCase):
             rc = mod.main()
             self.assertEqual(rc, 0, "generator exited non-zero")
 
-            raw = template_path.read_text()
-            # Extract the value between the outer single quotes on the policy line.
-            import re
-            m = re.search(r"^  policy: '(.*)'$", raw, re.MULTILINE)
-            self.assertIsNotNone(m, f"policy line not found in:\n{raw}")
-            # Un-escape '' → ' to recover the actual JSON string.
-            return m.group(1).replace("''", "'")
+            # Parse via yaml.safe_load — the same path kustomize and the drift
+            # check use. A regex + manual un-escape would pass even if the
+            # apostrophe fix were absent, because it never exercises YAML
+            # parsing (the real failure mode: bare ' breaks yaml.safe_load).
+            import yaml
+            doc = yaml.safe_load(template_path.read_text())
+            return doc["spec"]["policy"]
 
     def test_round_trips_apostrophe(self):
         # An apostrophe in an endpoint host (or any string value) must survive
