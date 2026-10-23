@@ -565,6 +565,19 @@ class TestCheckSandboxTemplatePolicyDrift(unittest.TestCase):
             check_sandbox_template_policy_drift(findings, _template_path=tp, _policy_path=pp)
         self.assertTrue(any("not a string" in e for e in findings.errors))
 
+    def test_errors_when_embedded_json_is_invalid(self):
+        # If the generator writes corrupted JSON (e.g. a backslash-mangled
+        # replacement), the drift check must report a finding rather than
+        # crashing with a raw JSONDecodeError traceback.
+        with tempfile.TemporaryDirectory() as d:
+            tp = Path(d) / "sandbox-template.yaml"
+            pp = Path(d) / "default.yaml"
+            self._write_template("{not valid json}", tp)
+            self._write_yaml(_minimal_policy_src(), pp)
+            findings = Findings()
+            check_sandbox_template_policy_drift(findings, _template_path=tp, _policy_path=pp)
+        self.assertTrue(any("not valid JSON" in e for e in findings.errors))
+
     def test_errors_when_source_yaml_has_unknown_key(self):
         # If policies/default.yaml gains a section the converter doesn't
         # handle, the drift check must fail rather than silently passing.
@@ -599,6 +612,103 @@ class TestCheckSandboxTemplatePolicyDrift(unittest.TestCase):
             [],
             "Drift guard failed on real repo files — either policies/default.yaml "
             "has an unhandled key or the embedded policy JSON has drifted.",
+        )
+
+
+class TestGenerateHypershell(unittest.TestCase):
+    """Tests for hack/generate_hypershell.py.
+
+    The generator writes policy JSON into a single-quoted YAML scalar.
+    Two characters require special handling:
+      - Apostrophe: must be doubled to '' or the YAML becomes unparseable.
+      - Backslash: re.subn interprets \\n, \\1, etc. in a string replacement;
+        the generator must use a callable so backslashes pass through verbatim.
+    """
+
+    def _run_generate(self, policy_src: dict) -> str:
+        """Run the generator against a temp policy file and template; return
+        the spec.policy value that ends up in the template."""
+        import sys, importlib, types
+        import yaml
+
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            policy_path = d / "default.yaml"
+            policy_path.write_text(yaml.dump(policy_src))
+
+            # Build a minimal template file with the right spec.policy line.
+            template_path = d / "sandbox-template.yaml"
+            template_path.write_text(
+                "apiVersion: hypershell.redhat.io/v1\n"
+                "kind: SandboxTemplate\n"
+                "metadata:\n"
+                "  name: rosa-agent\n"
+                "spec:\n"
+                "  name_prefix: rosa-agent-\n"
+                "  image: quay.io/example/img:latest\n"
+                "  policy: '{}'\n"
+            )
+
+            # Import the generator with overridden path constants.
+            import importlib.util, types
+            spec = importlib.util.spec_from_file_location(
+                "generate_hypershell",
+                Path(__file__).resolve().parents[1] / "generate_hypershell.py",
+            )
+            mod = importlib.util.module_from_spec(spec)
+            mod.TEMPLATE_PATH = template_path
+            mod.POLICY_PATH = policy_path
+            spec.loader.exec_module(mod)
+
+            rc = mod.main()
+            self.assertEqual(rc, 0, "generator exited non-zero")
+
+            raw = template_path.read_text()
+            # Extract the value between the outer single quotes on the policy line.
+            import re
+            m = re.search(r"^  policy: '(.*)'$", raw, re.MULTILINE)
+            self.assertIsNotNone(m, f"policy line not found in:\n{raw}")
+            # Un-escape '' → ' to recover the actual JSON string.
+            return m.group(1).replace("''", "'")
+
+    def test_round_trips_apostrophe(self):
+        # An apostrophe in an endpoint host (or any string value) must survive
+        # the single-quoted YAML embedding and be re-parseable as valid JSON.
+        src = {
+            "version": 1,
+            "network_policies": {
+                "test": {
+                    "name": "it's-a-test",
+                    "endpoints": [{"host": "example.com", "port": 443,
+                                   "access": "read-only", "protocol": "rest",
+                                   "enforcement": "enforce"}],
+                }
+            },
+        }
+        policy_json = self._run_generate(src)
+        parsed = json.loads(policy_json)
+        self.assertEqual(
+            parsed["network_policies"]["test"]["name"], "it's-a-test"
+        )
+
+    def test_round_trips_backslash(self):
+        # A backslash in a JSON string value (e.g. a regex path like \\d+)
+        # must not be mangled by re.subn's replacement-string processing.
+        src = {
+            "version": 1,
+            "network_policies": {
+                "test": {
+                    "name": "back\\slash",
+                    "endpoints": [{"host": "example.com", "port": 443,
+                                   "access": "read-only", "protocol": "rest",
+                                   "enforcement": "enforce"}],
+                }
+            },
+        }
+        policy_json = self._run_generate(src)
+        parsed = json.loads(policy_json)
+        self.assertEqual(
+            parsed["network_policies"]["test"]["name"], "back\\slash"
         )
 
 

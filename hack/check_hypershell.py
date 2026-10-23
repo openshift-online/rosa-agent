@@ -483,7 +483,15 @@ def check_sandbox_template_policy_drift(
         findings.error("drift-guard", f"failed to convert policies/default.yaml: {exc}")
         return
 
-    embedded_obj = json.loads(embedded)
+    try:
+        embedded_obj = json.loads(embedded)
+    except json.JSONDecodeError as exc:
+        findings.error(
+            "drift-guard",
+            f"SandboxTemplate spec.policy is not valid JSON: {exc}. "
+            f"Re-run: make generate-hypershell",
+        )
+        return
     derived_obj = json.loads(derived)
     if embedded_obj != derived_obj:
         findings.error(

@@ -39,11 +39,15 @@ def main() -> int:
 
     policy_json = json.dumps(policy_src, separators=(",", ":"))
 
+    # Single-quoted YAML scalars escape a literal apostrophe as ''.
+    # Use a callable replacement so re.subn never interprets backslashes in
+    # the JSON (e.g. \\d+ in an L7 path regex would be mangled otherwise).
+    yaml_value = policy_json.replace("'", "''")
     text = TEMPLATE_PATH.read_text()
     # spec.policy is a single-quoted YAML scalar on one line.
     updated, count = re.subn(
         r"^  policy: '.*'$",
-        f"  policy: '{policy_json}'",
+        lambda _: f"  policy: '{yaml_value}'",
         text,
         flags=re.MULTILINE,
     )
