@@ -66,7 +66,10 @@ spec:
 
                   openshellctl gateway add "${OPENSHELL_GATEWAY_ENDPOINT}" --name rosa-agent
 
-                  openshellctl doctor --provider rosa-agent-github
+                  openshellctl doctor \
+                    --provider rosa-agent-github \
+                    --provider rosa-agent-jira \
+                    --provider rosa-agent-vertex
 
                   openshellctl sandbox create \
                     --replace \
