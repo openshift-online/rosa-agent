@@ -430,8 +430,11 @@ class TestPolicyYamlToJson(unittest.TestCase):
         out = json.loads(_policy_yaml_to_json(src))
         self.assertIsInstance(out["network"][0]["endpoints"][0]["port"], int)
 
-    def test_drops_binary_harness_key(self):
-        # harness is explicitly in the known-but-dropped set.
+    def test_errors_on_binary_harness_key(self):
+        # harness was removed from the OpenShell schema; the gateway rejects it
+        # outright. The converter must raise rather than silently drop it,
+        # because a silent drop would let a source file with harness pass the
+        # drift check and then fail at the gateway.
         src = {
             "network_policies": {
                 "r": {
@@ -440,8 +443,9 @@ class TestPolicyYamlToJson(unittest.TestCase):
                 }
             }
         }
-        out = json.loads(_policy_yaml_to_json(src))
-        self.assertEqual(out["network"][0]["binaries"][0], {"path": "/usr/bin/curl"})
+        with self.assertRaises(ValueError) as cm:
+            _policy_yaml_to_json(src)
+        self.assertIn("harness", str(cm.exception))
 
     def test_errors_on_unknown_top_level_key(self):
         # process: blocks and other sections are not mapped; they must not
@@ -506,6 +510,14 @@ class TestPolicyYamlToJson(unittest.TestCase):
         with self.assertRaises(ValueError) as cm:
             _policy_yaml_to_json(src)
         self.assertIn("mount_namespaces", str(cm.exception))
+
+    def test_ignores_version_key(self):
+        # policies/default.yaml carries a top-level version: 1 marker.
+        # The converter must accept it without error and not emit it in the JSON.
+        src = dict(_minimal_policy_src())
+        src["version"] = 1
+        out = json.loads(_policy_yaml_to_json(src))
+        self.assertNotIn("version", out)
 
 
 class TestCheckSandboxTemplateSpecFields(unittest.TestCase):
@@ -654,6 +666,27 @@ class TestCheckSandboxTemplatePolicyDrift(unittest.TestCase):
             findings = Findings()
             check_sandbox_template_policy_drift(findings, _template_path=tp, _policy_path=pp)
         self.assertTrue(any("failed to convert" in e or "drifted" in e for e in findings.errors))
+
+    def test_real_repo_files_pass_drift_check(self):
+        # Regression guard: run the drift check against the actual repo files.
+        # This catches issues like an unknown top-level key in policies/default.yaml
+        # (e.g. `version: 1`) that unit fixtures miss because they use minimal dicts.
+        # If this test fails, the drift guard would also fail `make hypershell-validate`.
+        repo_root = Path(__file__).resolve().parents[2]
+        template_path = repo_root / ".hypershell/base/platform/sandbox-template.yaml"
+        policy_path = repo_root / "policies/default.yaml"
+        if not template_path.exists() or not policy_path.exists():
+            self.skipTest("real repo files not present")
+        findings = Findings()
+        check_sandbox_template_policy_drift(
+            findings, _template_path=template_path, _policy_path=policy_path
+        )
+        self.assertEqual(
+            findings.errors,
+            [],
+            "Drift guard failed on real repo files — either policies/default.yaml "
+            "has an unhandled key or the embedded policy JSON has drifted.",
+        )
 
 
 if __name__ == "__main__":

@@ -37,7 +37,8 @@ YAML comments, not in `metadata`. `make check-hypershell` enforces both.
 ├── base/
 │   └── platform/
 │       ├── kustomization.yaml
-│       └── gateway.yaml        # the Gateway, prod identity
+│       ├── gateway.yaml           # the Gateway, prod identity
+│       └── sandbox-template.yaml  # the SandboxTemplate (MCS-225)
 └── overlays/
     ├── integration/            # hyp0  → rosa-agent-integration
     ├── staging/                # hyp1  → rosa-agent-staging

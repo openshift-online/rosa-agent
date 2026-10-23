@@ -431,15 +431,21 @@ def capability_value_valid(namespace: str, value: str) -> bool:
 # Any key NOT in these sets raises ValueError rather than being silently
 # dropped -- a silent drop means the drift guard passes while the template
 # loses the field, which is exactly what the guard exists to prevent.
-_KNOWN_POLICY_TOP_KEYS = frozenset({"filesystem_policy", "network_policies"})
+#
+# version: is a schema-version marker present in policies/default.yaml; it
+# does not appear in the proto / JSON output and is intentionally ignored.
+_KNOWN_POLICY_TOP_KEYS = frozenset({"filesystem_policy", "network_policies", "version"})
 _KNOWN_FILESYSTEM_KEYS = frozenset(
     {"include_workdir", "includeWorkdir", "read_only", "readOnly", "read_write", "readWrite"}
 )
 _KNOWN_RULE_KEYS = frozenset({"endpoints", "binaries", "name"})
 _KNOWN_ENDPOINT_KEYS = frozenset({"host", "port", "access", "protocol", "enforcement"})
-# harness is in the known set so it is not flagged as unknown; it is
-# intentionally dropped (not present in 0.1.x schema).
-_KNOWN_BINARY_KEYS = frozenset({"path", "harness"})
+# harness was removed from the OpenShell schema in 0.1.x; the gateway rejects
+# it outright (parse_rejects_removed_network_binary_harness_field in
+# openshell-policy). Raising here is more consistent with the guard's purpose
+# than silently dropping it: a source file with harness would pass the drift
+# check but fail at the gateway.
+_KNOWN_BINARY_KEYS = frozenset({"path"})
 
 
 def _policy_yaml_to_json(src: dict) -> str:
@@ -511,7 +517,8 @@ def _policy_yaml_to_json(src: dict) -> str:
             if unknown_bin:
                 raise ValueError(
                     f"network rule {rule_name!r}, binary {b.get('path', '?')!r}: "
-                    f"unknown key(s): {', '.join(sorted(unknown_bin))}"
+                    f"unknown key(s): {', '.join(sorted(unknown_bin))}; "
+                    f"the gateway rejects removed fields such as 'harness' outright"
                 )
             if b.get("path"):
                 binaries.append({"path": b["path"]})
@@ -569,7 +576,7 @@ def check_sandbox_template_policy_drift(
 
     try:
         derived = _policy_yaml_to_json(policy_src or {})
-    except (ValueError, Exception) as exc:
+    except Exception as exc:
         findings.error("drift-guard", f"failed to convert policies/default.yaml: {exc}")
         return
 
