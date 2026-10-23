@@ -351,10 +351,13 @@ KIND_SPEC_FIELDS = {
             "credential_driver",
         }
     ),
-    # SandboxTemplate: image, name_prefix, policy confirmed from
-    # `hsctl sandbox-template create --help` (hyp0 cluster) and the
-    # rosa-agent HyperShell reference tree's own sandbox-template examples.
-    # No other spec keys are accepted; any addition here requires a live
+    # SandboxTemplate: confirmed from `hsctl sandbox-template create --help`
+    # on hyp0. The command exposes four flags:
+    #   --body        → spec.policy  (the policy JSON string)
+    #   --image       → spec.image
+    #   --name        → metadata.name (set by hsctl, not a spec field)
+    #   --name-prefix → spec.name_prefix
+    # No other spec keys are accepted; any addition requires a live
     # verification against the api-server to avoid silent 400s.
     "SandboxTemplate": frozenset({"image", "name_prefix", "policy"}),
 }
