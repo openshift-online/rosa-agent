@@ -136,13 +136,13 @@ spec:
                 - name: HOME
                   value: /tmp
                 - name: OPENSHELL_GATEWAY_ENDPOINT
-                  value: "PLACEHOLDER_GATEWAY_ENDPOINT"
+                  value: "https://gw-openshell-02c8f9e0680fb903.hyp2-spoke1.infra.hypershell.app:443"
                 - name: OPENSHELL_OIDC_ISSUER
-                  value: "PLACEHOLDER_OIDC_ISSUER"
+                  value: "https://keycloak.hyp2.infra.hypershell.app/realms/hypershell"
                 - name: OPENSHELL_OIDC_CLIENT_ID
-                  value: "PLACEHOLDER_OIDC_CLIENT_ID"
+                  value: "hs-sa-3L1eUHbsHIb3IC4dPUGBKvCCyZJ-3L1ectgVPHVUh1EFS7NvLC43FB9"
                 - name: OPENSHELL_OIDC_AUDIENCE
-                  value: "PLACEHOLDER_OIDC_AUDIENCE"
+                  value: "rosa-agent-3L1eUHbsHIb3IC4dPUGBKvCCyZJ"
                 - name: OPENSHELL_OIDC_CLIENT_SECRET
                   valueFrom:
                     secretKeyRef:
