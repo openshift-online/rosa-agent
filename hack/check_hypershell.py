@@ -210,6 +210,7 @@ def check_resource(rel_path: str, doc: dict, index: int, findings: Findings) -> 
 JSON_STRING_FIELDS = {
     "Gateway": ("oidc", "route", "credential_driver"),
     "ProviderSpec": ("capability", "profile"),
+    "SandboxTemplate": ("policy",),
     "SecretSource": ("key_mappings",),
 }
 
@@ -350,6 +351,8 @@ KIND_SPEC_FIELDS = {
             "credential_driver",
         }
     ),
+    # model_sandbox_template_create_request.go
+    "SandboxTemplate": frozenset({"image", "name_prefix", "policy"}),
 }
 
 # Capability labels are validated server-side against a closed set of
@@ -420,6 +423,117 @@ def capability_value_valid(namespace: str, value: str) -> bool:
     return CAPABILITY_VALUE_RE.match(value) is not None
 
 
+def _policy_yaml_to_json(src: dict) -> str:
+    """Convert a policies/*.yaml structure to the JSON string the OpenShell
+    gateway expects (same transforms as openshellctl policyyaml/toproto.go).
+
+    Transforms applied:
+      filesystem_policy → "filesystem"   (camelCase inner fields)
+      network_policies  → "network[]"    (map key becomes rule name default)
+      port              → int            (uint32 in proto)
+      binaries[].harness → dropped       (not present in 0.1.x schema)
+      credentialSigning fields camelCased (credentialSigning/signingService/signingRegion)
+    """
+    out: dict = {}
+
+    fp = src.get("filesystem_policy") or {}
+    if fp:
+        out["filesystem"] = {
+            "includeWorkdir": bool(fp.get("include_workdir", fp.get("includeWorkdir", False))),
+            "readOnly": list(fp.get("read_only", fp.get("readOnly", []))),
+            "readWrite": list(fp.get("read_write", fp.get("readWrite", []))),
+        }
+
+    net_map = src.get("network_policies") or {}
+    network = []
+    for rule_name, rule in net_map.items():
+        endpoints = []
+        for ep in rule.get("endpoints", []):
+            entry: dict = {
+                "host": ep["host"],
+                "port": int(ep["port"]),
+                "access": ep.get("access", ""),
+                "protocol": ep.get("protocol", ""),
+                "enforcement": ep.get("enforcement", ""),
+            }
+            cs = ep.get("credential_signing") or ep.get("credentialSigning")
+            if cs:
+                entry["credentialSigning"] = {
+                    "signingService": cs.get("signing_service", cs.get("signingService", "")),
+                    "signingRegion": cs.get("signing_region", cs.get("signingRegion", "")),
+                }
+            endpoints.append(entry)
+
+        binaries = []
+        for b in rule.get("binaries", []):
+            if b.get("path"):
+                binaries.append({"path": b["path"]})
+
+        net_entry: dict = {
+            "name": rule.get("name", rule_name),
+            "endpoints": endpoints,
+        }
+        if binaries:
+            net_entry["binaries"] = binaries
+        network.append(net_entry)
+
+    if network:
+        out["network"] = network
+
+    return json.dumps(out, separators=(",", ":"))
+
+
+def check_sandbox_template_policy_drift(findings: Findings) -> None:
+    """Verify that the policy JSON embedded in the SandboxTemplate manifest
+    matches the current policies/default.yaml (after applying the toproto
+    transforms). A mismatch means the template was hand-edited or the source
+    drifted without a corresponding template update.
+
+    This check is best-effort: if the template file or the source YAML is
+    missing, a finding is raised. If PyYAML is available (it is required at
+    the top of this script), the comparison runs in full.
+    """
+    template_path = HYPERSHELL_DIR / "base/platform/sandbox-template.yaml"
+    policy_path = REPO_ROOT / "policies/default.yaml"
+
+    if not template_path.exists():
+        findings.error("drift-guard", f"{template_path.relative_to(REPO_ROOT)} not found")
+        return
+    if not policy_path.exists():
+        findings.error("drift-guard", f"{policy_path.relative_to(REPO_ROOT)} not found")
+        return
+
+    with open(template_path) as f:
+        tmpl = yaml.safe_load(f)
+    with open(policy_path) as f:
+        policy_src = yaml.safe_load(f)
+
+    embedded = ((tmpl or {}).get("spec") or {}).get("policy")
+    if not isinstance(embedded, str):
+        findings.error(
+            "drift-guard",
+            "SandboxTemplate spec.policy is not a string — cannot compare with policies/default.yaml",
+        )
+        return
+
+    try:
+        derived = _policy_yaml_to_json(policy_src or {})
+    except Exception as exc:
+        findings.error("drift-guard", f"failed to convert policies/default.yaml: {exc}")
+        return
+
+    embedded_obj = json.loads(embedded)
+    derived_obj = json.loads(derived)
+    if embedded_obj != derived_obj:
+        findings.error(
+            "drift-guard",
+            "SandboxTemplate spec.policy has drifted from policies/default.yaml. "
+            "Re-run the policy conversion (see the comment in sandbox-template.yaml) "
+            "and update the embedded JSON, or run `make hypershell-validate` after "
+            "editing either file to catch this automatically.",
+        )
+
+
 def check_gateway_name(rel_path: str, docs: list[dict], findings: Findings) -> None:
     gateways = [d for d in docs if d.get("kind") == "Gateway"]
     if len(gateways) != 1:
@@ -445,6 +559,7 @@ def main() -> int:
     require_kustomize()
 
     findings = Findings()
+    check_sandbox_template_policy_drift(findings)
     for rel_path in EXPECTED_GATEWAY_NAME:
         docs = build(rel_path, findings)
         if docs is None:

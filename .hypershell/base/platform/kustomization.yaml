@@ -12,3 +12,4 @@ kind: Kustomization
 # recursive registration; registration is a separate manual act (MCS-224).
 resources:
   - gateway.yaml
+  - sandbox-template.yaml
