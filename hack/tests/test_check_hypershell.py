@@ -584,7 +584,7 @@ class TestCheckSandboxTemplatePolicyDrift(unittest.TestCase):
         # Regression guard: run the drift check against the actual repo files.
         # This catches issues like an unknown top-level key in policies/default.yaml
         # (e.g. `version: 1`) that unit fixtures miss because they use minimal dicts.
-        # If this test fails, the drift guard would also fail `make hypershell-validate`.
+        # If this test fails, the drift guard would also fail `make check-hypershell`.
         repo_root = Path(__file__).resolve().parents[2]
         template_path = repo_root / ".hypershell/base/platform/sandbox-template.yaml"
         policy_path = repo_root / "policies/default.yaml"

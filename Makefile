@@ -11,7 +11,7 @@ SANDBOX_TAG ?= $(shell git rev-parse --short=7 HEAD)
 SANDBOX_CONTAINERFILE := Containerfile
 SANDBOX_CONTEXT := .
 
-.PHONY: lint markdown-lint check-placeholders lint-sandbox check-hypershell test test-hack sandbox-build sandbox-push require-sandbox-image
+.PHONY: lint markdown-lint check-placeholders lint-sandbox check-hypershell generate-hypershell test test-hack sandbox-build sandbox-push require-sandbox-image
 
 # Parent lint target: runs every linter. The OpenShift CI `ci/prow/lint`
 # presubmit runs `make lint`. Add new linters (shell, yaml, ...) as their own
@@ -36,6 +36,12 @@ lint: markdown-lint check-placeholders lint-sandbox check-hypershell
 # it prints kind and name only and validates nothing server-side.
 check-hypershell:
 	python3 hack/check_hypershell.py
+
+# Regenerate the policy JSON embedded in the rosa-agent SandboxTemplate.
+# Run this after every edit to policies/default.yaml, then re-run
+# check-hypershell to confirm the drift check passes.
+generate-hypershell:
+	python3 hack/generate_hypershell.py
 
 # Lint all Markdown docs. Requires markdownlint-cli2 (npm i -g markdownlint-cli2).
 # Rules live in .markdownlint-cli2.yaml.

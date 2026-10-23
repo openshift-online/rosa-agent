@@ -23,9 +23,10 @@
 # google-vertex-ai provider profile (attached via --provider). Duplicating
 # them here would produce an ambiguity validation failure at sandbox creation.
 #
-# hack/hypershell/validate.py checks that this policy stays in sync with
-# policies/default.yaml. Re-run `make hypershell-validate` after editing
-# either file.
+# hack/check_hypershell.py checks that this policy stays in sync with
+# policies/default.yaml. After editing policies/default.yaml, regenerate
+# spec.policy and re-validate:
+#   make generate-hypershell && make check-hypershell
 apiVersion: hypershell.redhat.io/v1
 kind: SandboxTemplate
 metadata:

@@ -489,9 +489,7 @@ def check_sandbox_template_policy_drift(
         findings.error(
             "drift-guard",
             "SandboxTemplate spec.policy has drifted from policies/default.yaml. "
-            "Re-run the policy conversion (see the comment in sandbox-template.yaml) "
-            "and update the embedded JSON, or run `make hypershell-validate` after "
-            "editing either file to catch this automatically.",
+            "Regenerate with: make generate-hypershell",
         )
 
 
