@@ -430,39 +430,39 @@ def capability_value_valid(namespace: str, value: str) -> bool:
     return CAPABILITY_VALUE_RE.match(value) is not None
 
 
-# Keys the converter explicitly handles at each level of policies/*.yaml.
-# Any key NOT in these sets raises ValueError rather than being silently
-# dropped -- a silent drop means the drift guard passes while the template
-# loses the field, which is exactly what the guard exists to prevent.
+# Keys the converter validates at each level of policies/*.yaml before
+# serialising to JSON. Any key NOT in these sets raises ValueError so that a
+# new field in default.yaml causes an explicit error rather than being
+# silently lost and producing a false-passing drift check.
 #
-# version: is a schema-version marker present in policies/default.yaml; it
-# does not appear in the proto / JSON output and is intentionally ignored.
+# The policy string is validated by openshellctl/pkg/policyyaml/types.go
+# (strict deny-unknown-fields, snake_case throughout). The JSON is therefore
+# the YAML document serialised directly with no field renaming.
 _KNOWN_POLICY_TOP_KEYS = frozenset({"filesystem_policy", "network_policies", "version"})
-_KNOWN_FILESYSTEM_KEYS = frozenset(
-    {"include_workdir", "includeWorkdir", "read_only", "readOnly", "read_write", "readWrite"}
-)
+_KNOWN_FILESYSTEM_KEYS = frozenset({"include_workdir", "read_only", "read_write"})
+# name is an explicit field in each rule dict (map key uses underscores,
+# e.g. github_api; name field carries the hyphenated form, e.g. github-api).
 _KNOWN_RULE_KEYS = frozenset({"endpoints", "binaries", "name"})
 _KNOWN_ENDPOINT_KEYS = frozenset({"host", "port", "access", "protocol", "enforcement"})
-# harness was removed from the OpenShell schema in 0.1.x; the gateway rejects
-# it outright (parse_rejects_removed_network_binary_harness_field in
-# openshell-policy). Raising here is more consistent with the guard's purpose
-# than silently dropping it: a source file with harness would pass the drift
-# check but fail at the gateway.
+# harness was removed from the OpenShell schema; the gateway rejects it
+# outright. Raising here prevents a source file with harness from silently
+# passing the drift check and then failing at the gateway.
 _KNOWN_BINARY_KEYS = frozenset({"path"})
 
 
 def _policy_yaml_to_json(src: dict) -> str:
-    """Convert a policies/*.yaml structure to the JSON string the OpenShell
-    gateway expects (same transforms as openshellctl policyyaml/toproto.go).
+    """Serialise a policies/*.yaml document as the JSON string stored in
+    SandboxTemplate.spec.policy.
 
-    Transforms applied:
-      filesystem_policy → "filesystem"  (camelCase inner fields)
-      network_policies  → "network[]"   (map key becomes rule name default)
-      port              → int           (uint32 in proto)
-      binaries[].harness → dropped      (not present in 0.1.x schema)
+    The gateway validates this string using openshellctl/pkg/policyyaml/types.go
+    (strict deny-unknown-fields, snake_case throughout). The JSON is therefore
+    the YAML document serialised directly -- no field renaming, no structural
+    changes. A policies/default.yaml that passes `openshellctl policy lint`
+    should round-trip through this function unchanged.
 
-    Raises ValueError for any key at any level that is not in the converter's
-    known set, so unknown fields cannot be silently dropped.
+    Raises ValueError for any key at any level that is not in the known set,
+    so a new field in default.yaml causes an explicit error rather than being
+    silently lost and producing a false-passing drift check.
     """
     unknown_top = set(src) - _KNOWN_POLICY_TOP_KEYS
     if unknown_top:
@@ -471,8 +471,6 @@ def _policy_yaml_to_json(src: dict) -> str:
             f"extend the converter or the drift guard will silently lose these fields"
         )
 
-    out: dict = {}
-
     fp = src.get("filesystem_policy") or {}
     if fp:
         unknown_fs = set(fp) - _KNOWN_FILESYSTEM_KEYS
@@ -480,14 +478,8 @@ def _policy_yaml_to_json(src: dict) -> str:
             raise ValueError(
                 f"unknown filesystem_policy key(s): {', '.join(sorted(unknown_fs))}"
             )
-        out["filesystem"] = {
-            "includeWorkdir": bool(fp.get("include_workdir", fp.get("includeWorkdir", False))),
-            "readOnly": list(fp.get("read_only", fp.get("readOnly", []))),
-            "readWrite": list(fp.get("read_write", fp.get("readWrite", []))),
-        }
 
     net_map = src.get("network_policies") or {}
-    network = []
     for rule_name, rule in net_map.items():
         unknown_rule = set(rule) - _KNOWN_RULE_KEYS
         if unknown_rule:
@@ -495,8 +487,6 @@ def _policy_yaml_to_json(src: dict) -> str:
                 f"network rule {rule_name!r}: unknown key(s): {', '.join(sorted(unknown_rule))}; "
                 f"extend the converter or the drift guard will silently lose these fields"
             )
-
-        endpoints = []
         for ep in rule.get("endpoints", []):
             unknown_ep = set(ep) - _KNOWN_ENDPOINT_KEYS
             if unknown_ep:
@@ -505,16 +495,6 @@ def _policy_yaml_to_json(src: dict) -> str:
                     f"unknown key(s): {', '.join(sorted(unknown_ep))}; "
                     f"extend the converter or the drift guard will silently lose these fields"
                 )
-            entry: dict = {
-                "host": ep["host"],
-                "port": int(ep["port"]),
-                "access": ep.get("access", ""),
-                "protocol": ep.get("protocol", ""),
-                "enforcement": ep.get("enforcement", ""),
-            }
-            endpoints.append(entry)
-
-        binaries = []
         for b in rule.get("binaries", []):
             unknown_bin = set(b) - _KNOWN_BINARY_KEYS
             if unknown_bin:
@@ -523,21 +503,8 @@ def _policy_yaml_to_json(src: dict) -> str:
                     f"unknown key(s): {', '.join(sorted(unknown_bin))}; "
                     f"the gateway rejects removed fields such as 'harness' outright"
                 )
-            if b.get("path"):
-                binaries.append({"path": b["path"]})
 
-        net_entry: dict = {
-            "name": rule.get("name", rule_name),
-            "endpoints": endpoints,
-        }
-        if binaries:
-            net_entry["binaries"] = binaries
-        network.append(net_entry)
-
-    if network:
-        out["network"] = network
-
-    return json.dumps(out, separators=(",", ":"))
+    return json.dumps(src, separators=(",", ":"))
 
 
 def check_sandbox_template_policy_drift(

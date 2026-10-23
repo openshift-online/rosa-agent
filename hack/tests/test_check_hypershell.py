@@ -379,15 +379,21 @@ class TestFindings(unittest.TestCase):
 
 
 def _minimal_policy_src():
-    """Minimal policies/default.yaml-shaped dict for converter and drift tests."""
+    """Minimal policies/default.yaml-shaped dict for converter and drift tests.
+
+    Shape matches the real file: snake_case keys, network_policies is a map,
+    each rule has an explicit name field, and version is present.
+    """
     return {
+        "version": 1,
         "filesystem_policy": {
             "include_workdir": True,
             "read_only": [],
             "read_write": ["/tmp"],
         },
         "network_policies": {
-            "test-rule": {
+            "test_rule": {
+                "name": "test-rule",
                 "endpoints": [
                     {
                         "host": "example.com",
@@ -410,25 +416,17 @@ def _policy_src_to_yaml_bytes(src: dict) -> bytes:
 
 class TestPolicyYamlToJson(unittest.TestCase):
     def test_converts_minimal_source(self):
+        # The converter is a direct YAML→JSON serialisation: snake_case,
+        # network_policies map, version preserved.
         out = json.loads(_policy_yaml_to_json(_minimal_policy_src()))
-        self.assertEqual(out["filesystem"]["includeWorkdir"], True)
-        self.assertEqual(out["filesystem"]["readWrite"], ["/tmp"])
-        self.assertEqual(len(out["network"]), 1)
-        rule = out["network"][0]
+        self.assertEqual(out["version"], 1)
+        self.assertEqual(out["filesystem_policy"]["include_workdir"], True)
+        self.assertEqual(out["filesystem_policy"]["read_write"], ["/tmp"])
+        rule = out["network_policies"]["test_rule"]
         self.assertEqual(rule["name"], "test-rule")
         self.assertEqual(rule["endpoints"][0]["host"], "example.com")
         self.assertEqual(rule["endpoints"][0]["port"], 443)
         self.assertEqual(rule["binaries"][0]["path"], "/usr/bin/curl")
-
-    def test_port_coerced_to_int(self):
-        # Port may appear as a string in some YAML authors.
-        src = {
-            "network_policies": {
-                "r": {"endpoints": [{"host": "h", "port": "443", "access": "", "protocol": "", "enforcement": ""}]}
-            }
-        }
-        out = json.loads(_policy_yaml_to_json(src))
-        self.assertIsInstance(out["network"][0]["endpoints"][0]["port"], int)
 
     def test_errors_on_binary_harness_key(self):
         # harness was removed from the OpenShell schema; the gateway rejects it
@@ -458,8 +456,9 @@ class TestPolicyYamlToJson(unittest.TestCase):
 
     def test_errors_on_unknown_endpoint_key(self):
         # request_body_credential_rewrite is a real upstream endpoint field;
-        # the converter must not silently drop it.
+        # the converter must raise rather than silently pass it through.
         src = {
+            "version": 1,
             "network_policies": {
                 "r": {
                     "endpoints": [
@@ -481,6 +480,7 @@ class TestPolicyYamlToJson(unittest.TestCase):
 
     def test_errors_on_unknown_rule_key(self):
         src = {
+            "version": 1,
             "network_policies": {
                 "r": {
                     "endpoints": [],
@@ -494,6 +494,7 @@ class TestPolicyYamlToJson(unittest.TestCase):
 
     def test_errors_on_unknown_binary_key(self):
         src = {
+            "version": 1,
             "network_policies": {
                 "r": {
                     "endpoints": [{"host": "h", "port": 443, "access": "", "protocol": "", "enforcement": ""}],
@@ -506,18 +507,17 @@ class TestPolicyYamlToJson(unittest.TestCase):
         self.assertIn("env", str(cm.exception))
 
     def test_errors_on_unknown_filesystem_key(self):
-        src = {"filesystem_policy": {"include_workdir": True, "mount_namespaces": []}}
+        src = {"version": 1, "filesystem_policy": {"include_workdir": True, "mount_namespaces": []}}
         with self.assertRaises(ValueError) as cm:
             _policy_yaml_to_json(src)
         self.assertIn("mount_namespaces", str(cm.exception))
 
-    def test_ignores_version_key(self):
+    def test_preserves_version_key(self):
         # policies/default.yaml carries a top-level version: 1 marker.
-        # The converter must accept it without error and not emit it in the JSON.
-        src = dict(_minimal_policy_src())
-        src["version"] = 1
-        out = json.loads(_policy_yaml_to_json(src))
-        self.assertNotIn("version", out)
+        # The converter must accept it and preserve it in the JSON output
+        # (openshellctl/pkg/policyyaml/types.go requires version).
+        out = json.loads(_policy_yaml_to_json(_minimal_policy_src()))
+        self.assertEqual(out["version"], 1)
 
 
 class TestCheckSandboxTemplateSpecFields(unittest.TestCase):
