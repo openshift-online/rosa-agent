@@ -115,9 +115,9 @@ sandbox-push: require-sandbox-image sandbox-build
 #
 # CronJobs are deployed directly to the rosaeng cluster (not via Konflux)
 # because Konflux build clusters cannot reach the Hypershell OIDC endpoint.
-# Each CronJob's manifest lives alongside its job skill and contains the
-# full inline script (gateway registration, OIDC token mint, sandbox
-# create):
+# Each CronJob's manifest lives alongside its job skill and contains an
+# openshellctl script (gateway add, doctor preflight, sandbox create via
+# sandbox/templates/noninteractive.yaml):
 #   sandbox/skills/job-sop-improve/job-sop-improve-cron.yaml
 #   sandbox/skills/job-image-vuln-check/job-image-vuln-check-cron.yaml
 #   sandbox/skills/job-ops-sop-pr-review/job-ops-sop-pr-review-cron.yaml
