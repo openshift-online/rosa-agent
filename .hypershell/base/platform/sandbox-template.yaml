@@ -4,8 +4,9 @@
 # environment variables and credential bindings do NOT belong here:
 #   - Providers attach via ProviderBinding + SecretSource on the agent_runtime
 #     (Phase 4) or via ProviderSpec + ProviderBinding (Phase 5).
-#   - JIRA_EMAIL, JIRA_BASE_URL and similar non-secret env vars pass at
-#     sandbox-creation time (--env) or via agent_runtime parameters.
+#   - JIRA_EMAIL, JIRA_BASE_URL and similar non-secret env vars pass via
+#     agent_runtime parameters. (The `hsctl sandbox create --env` flag is
+#     incompatible with --template and cannot be used here.)
 #   - sessionOpts, command and tty are sandbox-create-time or agent_runtime
 #     concerns, not template concerns.
 #

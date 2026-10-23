@@ -11,14 +11,19 @@ turn those into offline errors.
 
 import contextlib
 import io
+import json
+import tempfile
 import unittest
+from pathlib import Path
 
 from check_hypershell import (
     Findings,
+    _policy_yaml_to_json,
     check_gateway,
     check_gateway_name,
     check_json_string_fields,
     check_resource,
+    check_sandbox_template_policy_drift,
     check_spec_fields,
 )
 
@@ -371,6 +376,284 @@ class TestFindings(unittest.TestCase):
         findings.error("root", "something is wrong")
         with contextlib.redirect_stderr(io.StringIO()):
             self.assertEqual(findings.report(), 1)
+
+
+def _minimal_policy_src():
+    """Minimal policies/default.yaml-shaped dict for converter and drift tests."""
+    return {
+        "filesystem_policy": {
+            "include_workdir": True,
+            "read_only": [],
+            "read_write": ["/tmp"],
+        },
+        "network_policies": {
+            "test-rule": {
+                "endpoints": [
+                    {
+                        "host": "example.com",
+                        "port": 443,
+                        "access": "read-only",
+                        "protocol": "rest",
+                        "enforcement": "enforce",
+                    }
+                ],
+                "binaries": [{"path": "/usr/bin/curl"}],
+            }
+        },
+    }
+
+
+def _policy_src_to_yaml_bytes(src: dict) -> bytes:
+    import yaml  # validate.py already requires pyyaml
+    return yaml.dump(src).encode()
+
+
+class TestPolicyYamlToJson(unittest.TestCase):
+    def test_converts_minimal_source(self):
+        out = json.loads(_policy_yaml_to_json(_minimal_policy_src()))
+        self.assertEqual(out["filesystem"]["includeWorkdir"], True)
+        self.assertEqual(out["filesystem"]["readWrite"], ["/tmp"])
+        self.assertEqual(len(out["network"]), 1)
+        rule = out["network"][0]
+        self.assertEqual(rule["name"], "test-rule")
+        self.assertEqual(rule["endpoints"][0]["host"], "example.com")
+        self.assertEqual(rule["endpoints"][0]["port"], 443)
+        self.assertEqual(rule["binaries"][0]["path"], "/usr/bin/curl")
+
+    def test_port_coerced_to_int(self):
+        # Port may appear as a string in some YAML authors.
+        src = {
+            "network_policies": {
+                "r": {"endpoints": [{"host": "h", "port": "443", "access": "", "protocol": "", "enforcement": ""}]}
+            }
+        }
+        out = json.loads(_policy_yaml_to_json(src))
+        self.assertIsInstance(out["network"][0]["endpoints"][0]["port"], int)
+
+    def test_drops_binary_harness_key(self):
+        # harness is explicitly in the known-but-dropped set.
+        src = {
+            "network_policies": {
+                "r": {
+                    "endpoints": [{"host": "h", "port": 443, "access": "", "protocol": "", "enforcement": ""}],
+                    "binaries": [{"path": "/usr/bin/curl", "harness": "some-harness"}],
+                }
+            }
+        }
+        out = json.loads(_policy_yaml_to_json(src))
+        self.assertEqual(out["network"][0]["binaries"][0], {"path": "/usr/bin/curl"})
+
+    def test_errors_on_unknown_top_level_key(self):
+        # process: blocks and other sections are not mapped; they must not
+        # be silently dropped or the drift guard becomes a false reassurance.
+        src = dict(_minimal_policy_src())
+        src["process"] = {"allowed": ["/usr/bin/curl"]}
+        with self.assertRaises(ValueError) as cm:
+            _policy_yaml_to_json(src)
+        self.assertIn("process", str(cm.exception))
+
+    def test_errors_on_unknown_endpoint_key(self):
+        # request_body_credential_rewrite is a real upstream endpoint field;
+        # the converter must not silently drop it.
+        src = {
+            "network_policies": {
+                "r": {
+                    "endpoints": [
+                        {
+                            "host": "h",
+                            "port": 443,
+                            "access": "",
+                            "protocol": "",
+                            "enforcement": "",
+                            "request_body_credential_rewrite": True,
+                        }
+                    ]
+                }
+            }
+        }
+        with self.assertRaises(ValueError) as cm:
+            _policy_yaml_to_json(src)
+        self.assertIn("request_body_credential_rewrite", str(cm.exception))
+
+    def test_errors_on_unknown_rule_key(self):
+        src = {
+            "network_policies": {
+                "r": {
+                    "endpoints": [],
+                    "unknown_rule_field": "oops",
+                }
+            }
+        }
+        with self.assertRaises(ValueError) as cm:
+            _policy_yaml_to_json(src)
+        self.assertIn("unknown_rule_field", str(cm.exception))
+
+    def test_errors_on_unknown_binary_key(self):
+        src = {
+            "network_policies": {
+                "r": {
+                    "endpoints": [{"host": "h", "port": 443, "access": "", "protocol": "", "enforcement": ""}],
+                    "binaries": [{"path": "/usr/bin/curl", "env": "HOME=/tmp"}],
+                }
+            }
+        }
+        with self.assertRaises(ValueError) as cm:
+            _policy_yaml_to_json(src)
+        self.assertIn("env", str(cm.exception))
+
+    def test_errors_on_unknown_filesystem_key(self):
+        src = {"filesystem_policy": {"include_workdir": True, "mount_namespaces": []}}
+        with self.assertRaises(ValueError) as cm:
+            _policy_yaml_to_json(src)
+        self.assertIn("mount_namespaces", str(cm.exception))
+
+
+class TestCheckSandboxTemplateSpecFields(unittest.TestCase):
+    def _template(self, **spec):
+        base = {
+            "image": "quay.io/example/img:latest",
+            "name_prefix": "test-",
+            "policy": "{}",
+        }
+        base.update(spec)
+        return {
+            "apiVersion": "hypershell.redhat.io/v1",
+            "kind": "SandboxTemplate",
+            "metadata": {"name": "test"},
+            "spec": base,
+        }
+
+    def test_accepts_all_valid_spec_fields(self):
+        findings = Findings()
+        check_spec_fields("root", "SandboxTemplate", self._template(), findings)
+        self.assertEqual(findings.errors, [])
+
+    def test_rejects_unknown_spec_field(self):
+        findings = Findings()
+        check_spec_fields("root", "SandboxTemplate", self._template(env={"FOO": "bar"}), findings)
+        self.assertTrue(any("env" in e for e in findings.errors))
+
+    def test_policy_must_be_json_string_not_mapping(self):
+        findings = Findings()
+        check_json_string_fields(
+            "root", "SandboxTemplate", self._template(policy={"network": []}), findings
+        )
+        self.assertTrue(any("must be a JSON-encoded string" in e for e in findings.errors))
+
+    def test_policy_json_must_be_valid(self):
+        findings = Findings()
+        check_json_string_fields(
+            "root", "SandboxTemplate", self._template(policy="{bad json}"), findings
+        )
+        self.assertTrue(any("not valid JSON" in e for e in findings.errors))
+
+    def test_accepts_valid_policy_json_string(self):
+        findings = Findings()
+        check_json_string_fields("root", "SandboxTemplate", self._template(), findings)
+        self.assertEqual(findings.errors, [])
+
+    def test_check_resource_accepts_full_template(self):
+        findings = Findings()
+        check_resource("root", self._template(), 0, findings)
+        self.assertEqual(findings.errors, [])
+
+
+class TestCheckSandboxTemplatePolicyDrift(unittest.TestCase):
+    def _write_yaml(self, d: dict, path: Path) -> None:
+        import yaml
+        path.write_text(yaml.dump(d))
+
+    def _write_template(self, policy_json: str, path: Path) -> None:
+        import yaml
+        doc = {
+            "apiVersion": "hypershell.redhat.io/v1",
+            "kind": "SandboxTemplate",
+            "metadata": {"name": "rosa-agent"},
+            "spec": {
+                "name_prefix": "rosa-agent-",
+                "image": "quay.io/example/img:latest",
+                "policy": policy_json,
+            },
+        }
+        path.write_text(yaml.dump(doc))
+
+    def test_passes_when_policy_matches(self):
+        src = _minimal_policy_src()
+        expected_json = _policy_yaml_to_json(src)
+        with tempfile.TemporaryDirectory() as d:
+            tp = Path(d) / "sandbox-template.yaml"
+            pp = Path(d) / "default.yaml"
+            self._write_template(expected_json, tp)
+            self._write_yaml(src, pp)
+            findings = Findings()
+            check_sandbox_template_policy_drift(findings, _template_path=tp, _policy_path=pp)
+        self.assertEqual(findings.errors, [])
+
+    def test_errors_when_policy_has_drifted(self):
+        src = _minimal_policy_src()
+        expected_json = _policy_yaml_to_json(src)
+        # Modify the embedded JSON to simulate drift.
+        embedded = json.loads(expected_json)
+        embedded.setdefault("network", [{}])
+        embedded["network"].append({"name": "extra-block"})
+        with tempfile.TemporaryDirectory() as d:
+            tp = Path(d) / "sandbox-template.yaml"
+            pp = Path(d) / "default.yaml"
+            self._write_template(json.dumps(embedded), tp)
+            self._write_yaml(src, pp)
+            findings = Findings()
+            check_sandbox_template_policy_drift(findings, _template_path=tp, _policy_path=pp)
+        self.assertTrue(any("drifted" in e for e in findings.errors))
+
+    def test_errors_when_template_file_is_missing(self):
+        with tempfile.TemporaryDirectory() as d:
+            tp = Path(d) / "nonexistent-template.yaml"
+            pp = Path(d) / "default.yaml"
+            pp.write_text("")
+            findings = Findings()
+            check_sandbox_template_policy_drift(findings, _template_path=tp, _policy_path=pp)
+        self.assertTrue(any("not found" in e for e in findings.errors))
+
+    def test_errors_when_policy_file_is_missing(self):
+        src = _minimal_policy_src()
+        with tempfile.TemporaryDirectory() as d:
+            tp = Path(d) / "sandbox-template.yaml"
+            pp = Path(d) / "nonexistent.yaml"
+            self._write_template("{}", tp)
+            findings = Findings()
+            check_sandbox_template_policy_drift(findings, _template_path=tp, _policy_path=pp)
+        self.assertTrue(any("not found" in e for e in findings.errors))
+
+    def test_errors_when_policy_field_is_not_a_string(self):
+        with tempfile.TemporaryDirectory() as d:
+            tp = Path(d) / "sandbox-template.yaml"
+            pp = Path(d) / "default.yaml"
+            import yaml
+            tp.write_text(yaml.dump({
+                "apiVersion": "hypershell.redhat.io/v1",
+                "kind": "SandboxTemplate",
+                "metadata": {"name": "test"},
+                "spec": {"policy": {"network": []}},  # a mapping, not a string
+            }))
+            self._write_yaml(_minimal_policy_src(), pp)
+            findings = Findings()
+            check_sandbox_template_policy_drift(findings, _template_path=tp, _policy_path=pp)
+        self.assertTrue(any("not a string" in e for e in findings.errors))
+
+    def test_errors_when_source_yaml_has_unknown_key(self):
+        # If policies/default.yaml gains a section the converter doesn't
+        # handle, the drift check must fail rather than silently passing.
+        src = dict(_minimal_policy_src())
+        src["process"] = {"allowed": ["/usr/bin/curl"]}
+        expected_json = json.dumps({"network": []})
+        with tempfile.TemporaryDirectory() as d:
+            tp = Path(d) / "sandbox-template.yaml"
+            pp = Path(d) / "default.yaml"
+            self._write_template(expected_json, tp)
+            self._write_yaml(src, pp)
+            findings = Findings()
+            check_sandbox_template_policy_drift(findings, _template_path=tp, _policy_path=pp)
+        self.assertTrue(any("failed to convert" in e or "drifted" in e for e in findings.errors))
 
 
 if __name__ == "__main__":

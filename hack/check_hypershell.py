@@ -351,7 +351,11 @@ KIND_SPEC_FIELDS = {
             "credential_driver",
         }
     ),
-    # model_sandbox_template_create_request.go
+    # SandboxTemplate: image, name_prefix, policy confirmed from
+    # `hsctl sandbox-template create --help` (hyp0 cluster) and the
+    # rosa-agent HyperShell reference tree's own sandbox-template examples.
+    # No other spec keys are accepted; any addition here requires a live
+    # verification against the api-server to avoid silent 400s.
     "SandboxTemplate": frozenset({"image", "name_prefix", "policy"}),
 }
 
@@ -423,21 +427,50 @@ def capability_value_valid(namespace: str, value: str) -> bool:
     return CAPABILITY_VALUE_RE.match(value) is not None
 
 
+# Keys the converter explicitly handles at each level of policies/*.yaml.
+# Any key NOT in these sets raises ValueError rather than being silently
+# dropped -- a silent drop means the drift guard passes while the template
+# loses the field, which is exactly what the guard exists to prevent.
+_KNOWN_POLICY_TOP_KEYS = frozenset({"filesystem_policy", "network_policies"})
+_KNOWN_FILESYSTEM_KEYS = frozenset(
+    {"include_workdir", "includeWorkdir", "read_only", "readOnly", "read_write", "readWrite"}
+)
+_KNOWN_RULE_KEYS = frozenset({"endpoints", "binaries", "name"})
+_KNOWN_ENDPOINT_KEYS = frozenset({"host", "port", "access", "protocol", "enforcement"})
+# harness is in the known set so it is not flagged as unknown; it is
+# intentionally dropped (not present in 0.1.x schema).
+_KNOWN_BINARY_KEYS = frozenset({"path", "harness"})
+
+
 def _policy_yaml_to_json(src: dict) -> str:
     """Convert a policies/*.yaml structure to the JSON string the OpenShell
     gateway expects (same transforms as openshellctl policyyaml/toproto.go).
 
     Transforms applied:
-      filesystem_policy → "filesystem"   (camelCase inner fields)
-      network_policies  → "network[]"    (map key becomes rule name default)
-      port              → int            (uint32 in proto)
-      binaries[].harness → dropped       (not present in 0.1.x schema)
-      credentialSigning fields camelCased (credentialSigning/signingService/signingRegion)
+      filesystem_policy → "filesystem"  (camelCase inner fields)
+      network_policies  → "network[]"   (map key becomes rule name default)
+      port              → int           (uint32 in proto)
+      binaries[].harness → dropped      (not present in 0.1.x schema)
+
+    Raises ValueError for any key at any level that is not in the converter's
+    known set, so unknown fields cannot be silently dropped.
     """
+    unknown_top = set(src) - _KNOWN_POLICY_TOP_KEYS
+    if unknown_top:
+        raise ValueError(
+            f"unknown top-level policy section(s): {', '.join(sorted(unknown_top))}; "
+            f"extend the converter or the drift guard will silently lose these fields"
+        )
+
     out: dict = {}
 
     fp = src.get("filesystem_policy") or {}
     if fp:
+        unknown_fs = set(fp) - _KNOWN_FILESYSTEM_KEYS
+        if unknown_fs:
+            raise ValueError(
+                f"unknown filesystem_policy key(s): {', '.join(sorted(unknown_fs))}"
+            )
         out["filesystem"] = {
             "includeWorkdir": bool(fp.get("include_workdir", fp.get("includeWorkdir", False))),
             "readOnly": list(fp.get("read_only", fp.get("readOnly", []))),
@@ -447,8 +480,22 @@ def _policy_yaml_to_json(src: dict) -> str:
     net_map = src.get("network_policies") or {}
     network = []
     for rule_name, rule in net_map.items():
+        unknown_rule = set(rule) - _KNOWN_RULE_KEYS
+        if unknown_rule:
+            raise ValueError(
+                f"network rule {rule_name!r}: unknown key(s): {', '.join(sorted(unknown_rule))}; "
+                f"extend the converter or the drift guard will silently lose these fields"
+            )
+
         endpoints = []
         for ep in rule.get("endpoints", []):
+            unknown_ep = set(ep) - _KNOWN_ENDPOINT_KEYS
+            if unknown_ep:
+                raise ValueError(
+                    f"network rule {rule_name!r}, endpoint {ep.get('host', '?')!r}: "
+                    f"unknown key(s): {', '.join(sorted(unknown_ep))}; "
+                    f"extend the converter or the drift guard will silently lose these fields"
+                )
             entry: dict = {
                 "host": ep["host"],
                 "port": int(ep["port"]),
@@ -456,16 +503,16 @@ def _policy_yaml_to_json(src: dict) -> str:
                 "protocol": ep.get("protocol", ""),
                 "enforcement": ep.get("enforcement", ""),
             }
-            cs = ep.get("credential_signing") or ep.get("credentialSigning")
-            if cs:
-                entry["credentialSigning"] = {
-                    "signingService": cs.get("signing_service", cs.get("signingService", "")),
-                    "signingRegion": cs.get("signing_region", cs.get("signingRegion", "")),
-                }
             endpoints.append(entry)
 
         binaries = []
         for b in rule.get("binaries", []):
+            unknown_bin = set(b) - _KNOWN_BINARY_KEYS
+            if unknown_bin:
+                raise ValueError(
+                    f"network rule {rule_name!r}, binary {b.get('path', '?')!r}: "
+                    f"unknown key(s): {', '.join(sorted(unknown_bin))}"
+                )
             if b.get("path"):
                 binaries.append({"path": b["path"]})
 
@@ -483,24 +530,28 @@ def _policy_yaml_to_json(src: dict) -> str:
     return json.dumps(out, separators=(",", ":"))
 
 
-def check_sandbox_template_policy_drift(findings: Findings) -> None:
+def check_sandbox_template_policy_drift(
+    findings: Findings,
+    *,
+    _template_path: Path | None = None,
+    _policy_path: Path | None = None,
+) -> None:
     """Verify that the policy JSON embedded in the SandboxTemplate manifest
     matches the current policies/default.yaml (after applying the toproto
     transforms). A mismatch means the template was hand-edited or the source
     drifted without a corresponding template update.
 
-    This check is best-effort: if the template file or the source YAML is
-    missing, a finding is raised. If PyYAML is available (it is required at
-    the top of this script), the comparison runs in full.
+    _template_path and _policy_path override the default locations; they exist
+    for unit tests only (leading underscore signals this).
     """
-    template_path = HYPERSHELL_DIR / "base/platform/sandbox-template.yaml"
-    policy_path = REPO_ROOT / "policies/default.yaml"
+    template_path = _template_path or HYPERSHELL_DIR / "base/platform/sandbox-template.yaml"
+    policy_path = _policy_path or REPO_ROOT / "policies/default.yaml"
 
     if not template_path.exists():
-        findings.error("drift-guard", f"{template_path.relative_to(REPO_ROOT)} not found")
+        findings.error("drift-guard", f"{template_path} not found")
         return
     if not policy_path.exists():
-        findings.error("drift-guard", f"{policy_path.relative_to(REPO_ROOT)} not found")
+        findings.error("drift-guard", f"{policy_path} not found")
         return
 
     with open(template_path) as f:
@@ -518,7 +569,7 @@ def check_sandbox_template_policy_drift(findings: Findings) -> None:
 
     try:
         derived = _policy_yaml_to_json(policy_src or {})
-    except Exception as exc:
+    except (ValueError, Exception) as exc:
         findings.error("drift-guard", f"failed to convert policies/default.yaml: {exc}")
         return
 
