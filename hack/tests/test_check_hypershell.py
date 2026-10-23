@@ -656,9 +656,12 @@ class TestGenerateHypershell(unittest.TestCase):
                 Path(__file__).resolve().parents[1] / "generate_hypershell.py",
             )
             mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            # Override after exec_module: executing the module sets the
+            # constants to the real repo paths; assignments before exec_module
+            # are overwritten by the module's own top-level code.
             mod.TEMPLATE_PATH = template_path
             mod.POLICY_PATH = policy_path
-            spec.loader.exec_module(mod)
 
             rc = mod.main()
             self.assertEqual(rc, 0, "generator exited non-zero")
