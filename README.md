@@ -254,64 +254,35 @@ This is likely the `openssh-clients` package missing from the execution environm
 
 Ensure your JWT has refreshed right before running the command.  Theoretically it's a 300s TTL, but in practice it doesn't seem to behave like this.  Need more data.
 
-### Refreshing your gateway token (interactive use)
+### Interactive gateway access (openshellctl)
 
-Once a gateway is registered (see above), you interact with it directly through
-the `openshell` CLI, `-g <gateway_name>`:
-
-```bash
-GW_NAME='ROSA Agentic Devx-rosa-agent'
-
-openshell -g "$GW_NAME" whoami
-openshell -g "$GW_NAME" sandbox create --name demo
-```
-
-The `client_credentials` access token in `oidc_token.json` is short-lived and
-there is no refresh token — it must be re-minted. The
-[`hack/refresh_openshell_token.py`](hack/refresh_openshell_token.py) helper
-re-mints the token in place from the OIDC client secret, verifies with
-`openshell whoami`, and optionally execs into an openshell command.
-
-The script reads the client secret from the `OPENSHELL_OIDC_CLIENT_SECRET`
-environment variable. If that variable is not set, it falls back to reading
-from Vault automatically (prompting for OIDC browser login if your Vault
-token is expired):
+Once the gateway OIDC credentials are in your environment, register the gateway
+and interact with it via `openshellctl`. Token minting is automatic — there is
+no separate refresh step; `openshellctl` re-mints via client credentials on
+every invocation:
 
 ```bash
-# Vault path: osd-sre/rosa-agent, field: hypershell-oidc-client-secret
-# To set the secret explicitly (e.g. in CI or to skip the Vault fallback):
-export OPENSHELL_OIDC_CLIENT_SECRET=$(vault kv get -mount=osd-sre -field=hypershell-oidc-client-secret rosa-agent)
+export OPENSHELL_GATEWAY_ENDPOINT="https://gw-openshell-02c8f9e0680fb903.hyp2-spoke1.infra.hypershell.app:443"
+export OPENSHELL_OIDC_ISSUER="https://keycloak.hyp2.infra.hypershell.app/realms/hypershell"
+export OPENSHELL_OIDC_CLIENT_ID="hs-sa-3L1eUHbsHIb3IC4dPUGBKvCCyZJ-3L1ectgVPHVUh1EFS7NvLC43FB9"
+export OPENSHELL_OIDC_AUDIENCE="rosa-agent-3L1eUHbsHIb3IC4dPUGBKvCCyZJ"
+export OPENSHELL_OIDC_CLIENT_SECRET=$(vault kv get -mount=osd-sre \
+  -field=hypershell-oidc-client-secret rosa-agent-konflux)
 
-# Or just let the script read Vault for you — it will prompt for OIDC
-# browser login if your Vault token (~/.vault-token) is expired:
-hack/refresh_openshell_token.py -g "$GW_NAME"
+openshellctl gateway add "${OPENSHELL_GATEWAY_ENDPOINT}" --name rosa-agent
+openshellctl doctor \
+  --provider rosa-agent-github \
+  --provider rosa-agent-jira \
+  --provider rosa-agent-vertex
+openshellctl sandbox create \
+  --name "${USER}-$(date +%s)" \
+  --from quay.io/redhat-services-prod/rosa-tenant/rosa-agent/rosa-agent:latest \
+  --provider rosa-agent-vertex \
+  --provider rosa-agent-github \
+  --provider rosa-agent-jira \
+  --no-keep \
+  -- claude --dangerously-skip-permissions --print "Ping"
 ```
-
-```bash
-# Re-mint the gateway's token file and verify with whoami:
-hack/refresh_openshell_token.py -g "$GW_NAME"
-
-# Only re-mint if fewer than 90s of life remain:
-hack/refresh_openshell_token.py -g "$GW_NAME" --if-expiring 90
-
-# Refresh the token, verify with whoami, then exec into openshell.
-# The script replaces itself with the openshell process (os.execv),
-# so openshell gets the real TTY and signals:
-hack/refresh_openshell_token.py -g "ROSA Agentic Devx-rosa-agent" \
-  --exec -- sandbox create --name "${USER}-$(date +%s)" \
-    --from quay.io/redhat-services-prod/rosa-tenant/rosa-agent/rosa-agent:latest \
-    --provider rosa-agent-vertex \
-    --provider rosa-agent-github --provider rosa-agent-jira \
-    --env JIRA_EMAIL="sd-sre-platform+rosa-agent@redhat.com" \
-    --env=JIRA_BASE_URL="https://redhat.atlassian.net" \
-    --no-keep --no-tty \
-    -- claude --dangerously-skip-permissions --print "Ping"
-```
-
-It reads config (issuer, client id) from the gateway's `metadata.json`, so no
-flags beyond `-g` are needed for a gateway registered as above. Run
-`hack/refresh_openshell_token.py --help` for the full flag list (Vault
-mount/path/field overrides, `--no-browser`, `--no-vault-login`, etc.).
 
 ## Github
 
