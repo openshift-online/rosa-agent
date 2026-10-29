@@ -1,0 +1,33 @@
+# Capability profile: Red Hat documentation (anonymous, read-only).
+#
+# Replaces the redhat_docs block that was in policies/default.yaml (plan 0014).
+# Only WebFetch (claude) needs this; no script uses curl to reach docs.redhat.com.
+#
+# No credential — a provider of this type can be created with no credential value.
+#
+# Import:
+#   openshell -g <gateway> profile lint   --file provider-profiles/redhat-docs.yaml
+#   openshell -g <gateway> profile import --file provider-profiles/redhat-docs.yaml --global
+#
+# Create the provider (credential-less):
+#   openshell -g <gateway> provider create --name ro-redhat_docs \
+#       --type redhat-docs --global-profile
+#
+# Attach to: interactive sessions only. No scheduled job references docs.redhat.com.
+#
+# Behaviour change from policies/default.yaml:
+#   - /usr/bin/curl is dropped; no script uses curl here, so removing it
+#     avoids a scripting channel to the documentation CDN.
+
+id: redhat-docs
+display_name: Red Hat documentation (anonymous, read-only)
+description: docs.redhat.com WebFetch access for interactive sessions (anonymous, read-only)
+category: data
+endpoints:
+  - host: docs.redhat.com
+    port: 443
+    protocol: rest
+    access: read-only
+    enforcement: enforce
+binaries: [/usr/bin/claude]
+inference_capable: false
