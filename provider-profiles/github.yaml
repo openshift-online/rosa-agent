@@ -88,8 +88,8 @@ endpoints:
       - allow: { method: POST,   path: "/repos/*/*/labels" }
       - allow: { method: POST,   path: "/repos/*/*/issues/*/labels" }
   # GraphQL: read-only enforced at protocol level. gh pr create and gh issue
-  # create use GraphQL mutations; those go through this endpoint at query/mutation
-  # semantic level. Pure gh api REST calls go through the REST block above.
+  # create use GraphQL mutations, which this read-only endpoint denies — use
+  # gh api -X POST REST calls instead. Pure gh api calls go through the REST block.
   - host: api.github.com
     port: 443
     path: /graphql
