@@ -159,7 +159,8 @@ RUN grep -rl 'openshell:resolve:env:\|OPENSHELL-RESOLVE-ENV-' /sandbox/.agents/s
 # Baked at the OpenShell-standard path so it applies automatically when
 # --policy is not passed at sandbox create time. Precedence (lowest to highest):
 #   /etc/openshell/policy.yaml (this file) < OPENSHELL_SANDBOX_POLICY < --policy flag
-# Operators override per-sandbox with --policy, or gateway-wide via the env var.
+# Operators override per-sandbox with --policy. OPENSHELL_SANDBOX_POLICY is read
+# by the CLI at sandbox-create time (openshell-cli/src/run.rs), not by the gateway.
 COPY policies/default.yaml /etc/openshell/policy.yaml
 
 # --- pre-seed Claude Code trust state ---

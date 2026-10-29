@@ -11,264 +11,41 @@ filesystem_policy:
     - /tmp
     - /dev/null
 
-network_policies:
-  # NOTE: api.github.com and github.com are deliberately absent. They moved to
-  # provider-profiles/github.yaml, which is attached per sandbox via
-  # `--provider rosa-agent-github`.
-  #
-  # They were here as coarse read-write blocks, and that actively defeated the
-  # profile's narrower rules. L7 authorization is a union across every matching
-  # endpoint: any single allow admits the request, and only an explicit deny
-  # overrides. So a `read-write` on github.com here expanded to POST ** and
-  # permitted git-receive-pack regardless of the profile carefully allowing
-  # only git-upload-pack -- the same trap this file already documents for Jira
-  # and PagerDuty below.
-  #
-  # With the grants in the profile instead, the method/path rules there are the
-  # only thing permitting GitHub traffic, so they mean what they say. The
-  # consequence to remember: a sandbox created WITHOUT that provider attached
-  # now has no GitHub egress at all.
-  #
-  # The two remaining GitHub-adjacent blocks (github_assets, github_actions)
-  # stay here on purpose. They are scoped to curl, and a profile's `binaries`
-  # list applies to all of its endpoints, so folding them in would hand curl
-  # access to api.github.com and github.com as well -- a widening, not a
-  # tightening.
-
-  # Claude Code WebFetch safety preflight and WebSearch backend
-  anthropic_api:
-    name: anthropic-api
-    endpoints:
-      - host: api.anthropic.com
-        port: 443
-        access: read-write
-        protocol: rest
-        enforcement: enforce
-    binaries:
-      - path: /usr/bin/claude
-      - path: /usr/bin/curl
-  github_assets:
-    name: github-assets
-    endpoints:
-      - host: objects.githubusercontent.com
-        port: 443
-        access: read-only
-        protocol: rest
-        enforcement: enforce
-    binaries:
-      - path: /usr/bin/claude
-      - path: /usr/bin/curl
-  # CI status monitoring (read-only)
-  github_actions:
-    name: github-actions
-    endpoints:
-      - host: actions.githubusercontent.com
-        port: 443
-        access: read-only
-        protocol: rest
-        enforcement: enforce
-      - host: "*.actions.githubusercontent.com"
-        port: 443
-        access: read-only
-        protocol: rest
-        enforcement: enforce
-    binaries:
-      - path: /usr/bin/claude
-      - path: /usr/bin/curl
-  # Red Hat documentation reference
-  redhat_docs:
-    name: redhat-docs
-    endpoints:
-      - host: docs.redhat.com
-        port: 443
-        access: read-only
-        protocol: rest
-        enforcement: enforce
-    binaries:
-      - path: /usr/bin/claude
-      - path: /usr/bin/curl
-  # Red Hat container registry — read-only. Used by skopeo to inspect/verify
-  # a candidate base-image tag's manifest and labels (e.g. confirming a newer
-  # registry.access.redhat.com/ubi9/ubi-minimal build contains a patched RPM)
-  # when remediating CVEs inherited from a pinned Red Hat base image. Scoped
-  # to GET-only registry v2 API traffic; no pulls beyond manifest/label
-  # inspection or pushes are granted. Mirrors the quay_registry block's
-  # shape. See ROSAENG-67606.
-  redhat_registry:
-    name: redhat-registry
-    endpoints:
-      - host: registry.access.redhat.com
-        port: 443
-        access: read-only
-        protocol: rest
-        enforcement: enforce
-    binaries:
-      - path: /usr/bin/curl
-      - path: /usr/bin/skopeo
-      - path: /usr/bin/claude
-  # Red Hat errata and security/VEX data — read-only. Used by curl to confirm
-  # which erratum/release fixes a given CVE (access.redhat.com/errata) and to
-  # read CSAF/VEX advisory data (security.access.redhat.com) so a candidate
-  # base-image tag can be verified to actually contain a fix before a
-  # remediation PR is opened. See ROSAENG-67606.
-  redhat_errata:
-    name: redhat-errata
-    endpoints:
-      - host: access.redhat.com
-        port: 443
-        access: read-only
-        protocol: rest
-        enforcement: enforce
-      - host: security.access.redhat.com
-        port: 443
-        access: read-only
-        protocol: rest
-        enforcement: enforce
-    binaries:
-      - path: /usr/bin/curl
-      - path: /usr/bin/claude
-  konflux:
-    name: konflux
-    endpoints:
-      - host: "**.stone-prd-rh01.pg1f.p1.openshiftapps.com"
-        port: 443
-        access: read-only
-        protocol: rest
-        enforcement: enforce
-      - host: "**.kflux-prd-rh02.0fk9.p1.openshiftapps.com"
-        port: 443
-        access: read-only
-        protocol: rest
-        enforcement: enforce
-      - host: "**.kflux-prd-rh03.nnv1.p1.openshiftapps.com"
-        port: 443
-        access: read-only
-        protocol: rest
-        enforcement: enforce
-    binaries:
-      - path: /usr/bin/claude
-      - path: /usr/bin/curl
-  codecov:
-    name: codecov
-    endpoints:
-      - host: app.codecov.io
-        port: 443
-        access: read-only
-        protocol: rest
-        enforcement: enforce
-    binaries:
-      - path: /usr/bin/claude
-      - path: /usr/bin/curl
-  prow:
-    name: prow
-    endpoints:
-      - host: prow.ci.openshift.org
-        port: 443
-        access: read-only
-        protocol: rest
-        enforcement: enforce
-    binaries:
-      - path: /usr/bin/claude
-      - path: /usr/bin/curl
-  # NOTE: Jira egress is intentionally NOT in this baked policy. With
-  # providers_v2_enabled=true the atlassian-jira provider profile composes its
-  # own endpoints with two-writes-only (comment + remotelink) method/path
-  # enforcement. A coarse read-write block here would union over — and defeat —
-  # that restriction (a PUT/issue-edit would reach Jira instead of being denied
-  # at the proxy). Attach the jira provider to grant Jira access; do not add it
-  # here.
-  # NOTE: PagerDuty egress is intentionally NOT in this baked policy, for the
-  # same reason as Jira above. The `pagerduty` provider profile
-  # (provider-profiles/pagerduty.yaml) composes its own read-only
-  # incidents/alerts + notes-write-only method/path enforcement; PagerDuty's
-  # API has no separate scope for "notes write" vs. "incident write", so that
-  # narrowing only exists at this profile's L7 allow-list. A coarse block here
-  # would union over and defeat it. Attach the pagerduty provider to grant
-  # PagerDuty access; do not add it here.
-  gitlab_cee:
-    name: gitlab-cee
-    endpoints:
-      - host: gitlab.cee.redhat.com
-        port: 443
-        access: read-write
-        protocol: rest
-        enforcement: enforce
-    binaries:
-      - path: /usr/bin/git
-      - path: /usr/local/bin/glab
-      - path: /usr/bin/claude
-  # Google Vertex AI endpoints are provided by the google-vertex-ai provider
-  # profile (attached via --provider rosa-agent-vertex). Do not duplicate them here;
-  # overlapping endpoints with differing request_body_credential_rewrite
-  # values cause an ambiguity validation failure at sandbox creation.
-  # Public container registry (quay.io) — read-only. Used to query the Quay
-  # API for image manifest/vulnerability data (curl) and to inspect image
-  # manifests, tags, and labels without pulling full images (skopeo). Scoped
-  # to GET-only registry/API traffic; no push/write capability is granted.
-  # See ROSAENG-67395.
-  quay_registry:
-    name: quay-registry
-    endpoints:
-      - host: quay.io
-        port: 443
-        access: read-only
-        protocol: rest
-        enforcement: enforce
-    binaries:
-      - path: /usr/bin/curl
-      - path: /usr/bin/skopeo
-      - path: /usr/bin/claude
-  # quay.io's blob storage backend redirects config-blob fetches (used by
-  # `skopeo inspect` to read OCI labels such as org.opencontainers.image.source)
-  # to S3. Read-only, mirrors the quay_registry shape above. Only the
-  # us-east-1 redirect target has been observed; other regions/buckets may
-  # need to be added if quay.io's backend changes. See ROSAENG-67603.
-  s3_blob_storage:
-    name: s3-blob-storage
-    endpoints:
-      - host: s3.us-east-1.amazonaws.com
-        port: 443
-        access: read-only
-        protocol: rest
-        enforcement: enforce
-    binaries:
-      - path: /usr/bin/curl
-      - path: /usr/bin/skopeo
-      - path: /usr/bin/claude
-  # Go module proxy, checksum verification, and package documentation
-  go_modules:
-    name: go-modules
-    endpoints:
-      - host: proxy.golang.org
-        port: 443
-        access: read-only
-        protocol: rest
-        enforcement: enforce
-      - host: sum.golang.org
-        port: 443
-        access: read-only
-        protocol: rest
-        enforcement: enforce
-      - host: pkg.go.dev
-        port: 443
-        access: read-only
-        protocol: rest
-        enforcement: enforce
-      # proxy.golang.org serves module zip content via redirects to this GCS
-      # bucket rather than from proxy.golang.org itself. Without it, any
-      # `go get`/`go mod download`/`go test`/`go build` that needs a module
-      # not already sitting in the local module cache fails with a proxy 403
-      # despite proxy.golang.org being reachable, the same way the
-      # binary-path mismatches noted below previously defeated this block.
-      - host: storage.googleapis.com
-        port: 443
-        access: read-only
-        protocol: rest
-        enforcement: enforce
-    binaries:
-      # go-toolset (dnf) installs to /usr/bin/go, not /usr/local/bin/go — see
-      # Containerfile. The wrong path here silently defeated this rule: the
-      # proxy allow-list is matched per-binary-path, so the real /usr/bin/go
-      # never matched and every `go get`/`go mod download` was denied with a
-      # policy 403 despite this rule existing.
-      - path: /usr/bin/go
+# Deliberately empty. A sandbox reaches nothing unless a provider is attached.
+# Grants live in provider-profiles/ so each one is attached per sandbox, named
+# in `policy get --full` as _provider_<name>, and removable without an image
+# rebuild. Do not add rules here; add or attach a profile instead.
+#
+# Previous rules and their replacements (plan 0014):
+#   anthropic_api      → not restored. Claude Code runs on Vertex
+#                        (CLAUDE_CODE_USE_VERTEX=1); WebSearch runs as a Vertex
+#                        server tool. skipWebFetchPreflight=true in settings.json
+#                        removes the only remaining reason to reach api.anthropic.com.
+#   gitlab_cee         → provider-profiles/gitlab-cee.yaml (credentialed, staged:
+#                        authored now, provider enabled once host is reachable).
+#   go_modules         → provider-profiles/go-modules.yaml, provider ro-go_modules.
+#   quay_registry,     → provider-profiles/image-inspect.yaml, provider
+#   redhat_registry,     ro-image_inspect.
+#   s3_blob_storage
+#   redhat_errata      → provider-profiles/redhat-errata.yaml, provider
+#                        ro-redhat_errata.
+#   prow, codecov,     → provider-profiles/ci-pipelines.yaml, provider
+#   github_actions,      ro-ci_pipelines.
+#   github_assets
+#   redhat_docs        → provider-profiles/redhat-docs.yaml, provider
+#                        ro-redhat_docs.
+#   konflux            → provider-profiles/konflux.yaml, provider ro-konflux.
+#
+# NOTE: Jira egress is intentionally NOT in this baked policy. With
+# providers_v2_enabled=true the atlassian-jira provider profile composes its
+# own endpoints with write method/path enforcement. A coarse read-write block
+# here would union over — and defeat — that restriction. Attach the jira
+# provider to grant Jira access; do not add it here.
+# NOTE: PagerDuty egress is intentionally NOT in this baked policy, for the
+# same reason as Jira above.
+# NOTE: GitHub egress is intentionally NOT in this baked policy. See
+# provider-profiles/github.yaml. A sandbox created WITHOUT that provider
+# attached has no GitHub egress at all.
+# NOTE: Vertex AI egress is intentionally NOT in this baked policy. See
+# provider-profiles/google-vertex-ai.yaml.
+network_policies: {}
