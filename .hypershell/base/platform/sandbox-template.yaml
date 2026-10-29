@@ -1,0 +1,43 @@
+# SandboxTemplate for rosa-agent.
+#
+# Carries only image, name_prefix and policy. Provider references,
+# environment variables and credential bindings do NOT belong here:
+#   - Providers attach via ProviderBinding + SecretSource on the agent_runtime
+#     (Phase 4) or via ProviderSpec + ProviderBinding (Phase 5).
+#   - JIRA_EMAIL, JIRA_BASE_URL and similar non-secret env vars pass via
+#     agent_runtime parameters. (The `hsctl sandbox create --env` flag is
+#     incompatible with --template and cannot be used here.)
+#   - sessionOpts, command and tty are sandbox-create-time or agent_runtime
+#     concerns, not template concerns.
+#
+# The spec.policy value is a JSON-encoded string (the HyperShell API stores
+# it as an opaque blob; the OpenShell gateway validates it). It is the direct
+# JSON serialisation of policies/default.yaml — snake_case field names, a
+# network_policies map keyed by rule name, and a top-level version: 1 — the
+# exact schema accepted by openshellctl/pkg/policyyaml/types.go (verified
+# with `openshellctl policy lint`). No field renaming or structural transforms
+# are applied.
+#
+# Several egress blocks are intentionally absent from the embedded policy:
+#   - Bedrock and Vertex AI (#108 / #110): come from the google-vertex-ai
+#     provider profile (attached via --provider).
+#   - GitHub api.github.com and github.com (#115): moved to
+#     provider-profiles/github.yaml so the profile's method/path restrictions
+#     mean what they say (a coarse block here unions over them and defeats L7
+#     enforcement). A sandbox without the github provider attached has no
+#     GitHub egress.
+# Duplicating any of these here would cause an ambiguity validation failure
+# at sandbox creation.
+#
+# hack/check_hypershell.py checks that this policy stays in sync with
+# policies/default.yaml. After editing policies/default.yaml, regenerate
+# spec.policy and re-validate:
+#   make generate-hypershell && make check-hypershell
+apiVersion: hypershell.redhat.io/v1
+kind: SandboxTemplate
+metadata:
+  name: rosa-agent
+spec:
+  name_prefix: rosa-agent-
+  image: quay.io/redhat-services-prod/rosa-tenant/rosa-agent/rosa-agent:latest
+  policy: '{"version":1,"filesystem_policy":{"include_workdir":true,"read_only":[],"read_write":["/tmp","/dev/null"]},"network_policies":{"anthropic_api":{"name":"anthropic-api","endpoints":[{"host":"api.anthropic.com","port":443,"access":"read-write","protocol":"rest","enforcement":"enforce"}],"binaries":[{"path":"/usr/bin/claude"},{"path":"/usr/bin/curl"}]},"github_assets":{"name":"github-assets","endpoints":[{"host":"objects.githubusercontent.com","port":443,"access":"read-only","protocol":"rest","enforcement":"enforce"}],"binaries":[{"path":"/usr/bin/claude"},{"path":"/usr/bin/curl"}]},"github_actions":{"name":"github-actions","endpoints":[{"host":"actions.githubusercontent.com","port":443,"access":"read-only","protocol":"rest","enforcement":"enforce"},{"host":"*.actions.githubusercontent.com","port":443,"access":"read-only","protocol":"rest","enforcement":"enforce"}],"binaries":[{"path":"/usr/bin/claude"},{"path":"/usr/bin/curl"}]},"redhat_docs":{"name":"redhat-docs","endpoints":[{"host":"docs.redhat.com","port":443,"access":"read-only","protocol":"rest","enforcement":"enforce"}],"binaries":[{"path":"/usr/bin/claude"},{"path":"/usr/bin/curl"}]},"redhat_registry":{"name":"redhat-registry","endpoints":[{"host":"registry.access.redhat.com","port":443,"access":"read-only","protocol":"rest","enforcement":"enforce"}],"binaries":[{"path":"/usr/bin/curl"},{"path":"/usr/bin/skopeo"},{"path":"/usr/bin/claude"}]},"redhat_errata":{"name":"redhat-errata","endpoints":[{"host":"access.redhat.com","port":443,"access":"read-only","protocol":"rest","enforcement":"enforce"},{"host":"security.access.redhat.com","port":443,"access":"read-only","protocol":"rest","enforcement":"enforce"}],"binaries":[{"path":"/usr/bin/curl"},{"path":"/usr/bin/claude"}]},"konflux":{"name":"konflux","endpoints":[{"host":"**.stone-prd-rh01.pg1f.p1.openshiftapps.com","port":443,"access":"read-only","protocol":"rest","enforcement":"enforce"},{"host":"**.kflux-prd-rh02.0fk9.p1.openshiftapps.com","port":443,"access":"read-only","protocol":"rest","enforcement":"enforce"},{"host":"**.kflux-prd-rh03.nnv1.p1.openshiftapps.com","port":443,"access":"read-only","protocol":"rest","enforcement":"enforce"}],"binaries":[{"path":"/usr/bin/claude"},{"path":"/usr/bin/curl"}]},"codecov":{"name":"codecov","endpoints":[{"host":"app.codecov.io","port":443,"access":"read-only","protocol":"rest","enforcement":"enforce"}],"binaries":[{"path":"/usr/bin/claude"},{"path":"/usr/bin/curl"}]},"prow":{"name":"prow","endpoints":[{"host":"prow.ci.openshift.org","port":443,"access":"read-only","protocol":"rest","enforcement":"enforce"}],"binaries":[{"path":"/usr/bin/claude"},{"path":"/usr/bin/curl"}]},"gitlab_cee":{"name":"gitlab-cee","endpoints":[{"host":"gitlab.cee.redhat.com","port":443,"access":"read-write","protocol":"rest","enforcement":"enforce"}],"binaries":[{"path":"/usr/bin/git"},{"path":"/usr/local/bin/glab"},{"path":"/usr/bin/claude"}]},"quay_registry":{"name":"quay-registry","endpoints":[{"host":"quay.io","port":443,"access":"read-only","protocol":"rest","enforcement":"enforce"}],"binaries":[{"path":"/usr/bin/curl"},{"path":"/usr/bin/skopeo"},{"path":"/usr/bin/claude"}]},"s3_blob_storage":{"name":"s3-blob-storage","endpoints":[{"host":"s3.us-east-1.amazonaws.com","port":443,"access":"read-only","protocol":"rest","enforcement":"enforce"}],"binaries":[{"path":"/usr/bin/curl"},{"path":"/usr/bin/skopeo"},{"path":"/usr/bin/claude"}]},"go_modules":{"name":"go-modules","endpoints":[{"host":"proxy.golang.org","port":443,"access":"read-only","protocol":"rest","enforcement":"enforce"},{"host":"sum.golang.org","port":443,"access":"read-only","protocol":"rest","enforcement":"enforce"},{"host":"pkg.go.dev","port":443,"access":"read-only","protocol":"rest","enforcement":"enforce"},{"host":"storage.googleapis.com","port":443,"access":"read-only","protocol":"rest","enforcement":"enforce"}],"binaries":[{"path":"/usr/bin/go"}]}}}'

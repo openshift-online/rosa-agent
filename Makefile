@@ -11,17 +11,59 @@ SANDBOX_TAG ?= $(shell git rev-parse --short=7 HEAD)
 SANDBOX_CONTAINERFILE := Containerfile
 SANDBOX_CONTEXT := .
 
-.PHONY: lint markdown-lint test sandbox-build sandbox-push require-sandbox-image
+.PHONY: lint markdown-lint check-placeholders lint-sandbox check-hypershell generate-hypershell test test-hack sandbox-build sandbox-push require-sandbox-image
 
 # Parent lint target: runs every linter. The OpenShift CI `ci/prow/lint`
 # presubmit runs `make lint`. Add new linters (shell, yaml, ...) as their own
 # targets and list them as prerequisites here.
-lint: markdown-lint
+#
+# check-hypershell needs kustomize and PyYAML, which the `ci/prow/lint`
+# build root provides. That build root is a dockerfile_literal in
+# openshift/release, NOT a Dockerfile in this repo:
+#   ci-operator/config/openshift-online/rosa-agent/
+#     openshift-online-rosa-agent-main.yaml
+# Adding a tool this target depends on means editing that file too.
+lint: markdown-lint check-placeholders lint-sandbox check-hypershell
+
+# Validate the .hypershell/ Kustomize tree: every build root renders, every
+# rendered resource is an importable Kind with a metadata.name, and each
+# overlay produces the gateway name its instance expects.
+#
+# This matters more than a normal lint because both consumers of this tree
+# fail quietly. The import silently skips non-importable Kinds, and nothing
+# ever writes Repository.status, so a broken tree looks identical to a
+# working one from outside. `hsctl apply -k --dry-run` is not a substitute:
+# it prints kind and name only and validates nothing server-side.
+check-hypershell:
+	python3 hack/check_hypershell.py
+
+# Regenerate the policy JSON embedded in the rosa-agent SandboxTemplate.
+# Run this after every edit to policies/default.yaml, then re-run
+# check-hypershell to confirm the drift check passes.
+generate-hypershell:
+	python3 hack/generate_hypershell.py
 
 # Lint all Markdown docs. Requires markdownlint-cli2 (npm i -g markdownlint-cli2).
 # Rules live in .markdownlint-cli2.yaml.
 markdown-lint:
 	markdownlint-cli2 "**/*.md"
+
+# Fail if any tracked file contains raw credential-placeholder literals
+# that trip the supervisor's request-body marker guard.  Containerfile
+# and the checker itself are allowlisted.
+check-placeholders:
+	python3 hack/check_placeholder_literals.py
+
+# Guard against re-introduction of removed Bedrock/inference.local config.
+# Covers sandbox files, docs, provider profiles, and policies. See MCS-324.
+SANDBOX_FORBIDDEN := inference\.local|ANTHROPIC_API_KEY|ANTHROPIC_BASE_URL|rosa-general-vertex|vertex-a([^i]|$$)
+SANDBOX_LINT_PATHS := sandbox/templates/ 'sandbox/skills/**/*-cron.yaml' README.md provider-profiles/ policies/ docs/
+lint-sandbox:
+	@git grep --extended-regexp --line-number '$(SANDBOX_FORBIDDEN)' -- $(SANDBOX_LINT_PATHS); \
+	rc=$$?; \
+	if [ $$rc -eq 0 ]; then echo "ERROR: forbidden Bedrock-era config found (MCS-324)"; exit 1; fi; \
+	if [ $$rc -ne 1 ]; then echo "ERROR: git grep failed (rc=$$rc)"; exit $$rc; fi; \
+	echo "lint-sandbox: OK"
 
 # Run every skill's Python unit tests, then any bundled shell-script tests.
 # Stdlib unittest only - this image has no pip, so no pytest/coverage
@@ -43,6 +85,12 @@ test:
 			done; \
 		fi; \
 	done
+	$(MAKE) test-hack
+
+# Unit tests for Python scripts in hack/.
+test-hack:
+	@echo "=== hack/tests ==="; \
+	PYTHONPATH=hack python3 -m unittest discover -s hack/tests
 
 # Local build tag when no image is given, so `make sandbox-build` works without
 # a registry. A push always requires SANDBOX_IMAGE (see require-sandbox-image).
@@ -73,9 +121,9 @@ sandbox-push: require-sandbox-image sandbox-build
 #
 # CronJobs are deployed directly to the rosaeng cluster (not via Konflux)
 # because Konflux build clusters cannot reach the Hypershell OIDC endpoint.
-# Each CronJob's manifest lives alongside its job skill and contains the
-# full inline script (gateway registration, OIDC token mint, sandbox
-# create):
+# Each CronJob's manifest lives alongside its job skill and contains an
+# openshellctl script (gateway add, doctor preflight, sandbox create via
+# sandbox/templates/noninteractive.yaml):
 #   sandbox/skills/job-sop-improve/job-sop-improve-cron.yaml
 #   sandbox/skills/job-image-vuln-check/job-image-vuln-check-cron.yaml
 #   sandbox/skills/job-ops-sop-pr-review/job-ops-sop-pr-review-cron.yaml

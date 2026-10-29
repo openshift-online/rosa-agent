@@ -1,5 +1,18 @@
 # Custom OpenShell provider profile: PagerDuty
 #
+# Status: this profile is imported on the gateways, but there is deliberately
+# NO central PagerDuty provider. Nothing in the scheduled work attaches
+# PagerDuty -- no sandbox template lists it, and policies/default.yaml omits
+# PagerDuty egress precisely so this profile composes its own narrower rules
+# instead of a coarse policy block union-ing over them.
+#
+# The profile is imported anyway because a provider can only be created
+# against a profile that exists on the gateway (`provider create --type
+# pagerduty`). Importing it makes the capability available so anyone working
+# on the gateway can create a PagerDuty provider bound to their own
+# credential, without a shared one existing. A profile on its own carries no
+# credential and grants nothing.
+#
 # Scope:
 #   Read  — incidents (list + by id), the incident activity/audit trail
 #           (log entries), and per-incident alerts (list + single alert by
@@ -25,15 +38,15 @@
 #   (see step 4 below for details). `lint` only checks schema shape, not
 #   scope content, so it will pass with the placeholder still in place - but
 #   every OAuth token request will then fail once imported.
-#   openshell provider profile lint -f provider-profiles/pagerduty.yaml
-#   openshell provider profile import -f provider-profiles/pagerduty.yaml
+#   openshell -g <gateway> profile lint   --file provider-profiles/pagerduty.yaml
+#   openshell -g <gateway> profile import --file provider-profiles/pagerduty.yaml --global
 #
 # Authorization: PagerDuty's REST API v2 has no scheme the sandbox proxy can
 # rewrite from a plain env-var placeholder. It only accepts
 # `Authorization: Token token=<api-key>` for classic API keys, and
 # SecretResolver::rewrite_header_value (openshell-core) splits header values
 # on the FIRST whitespace only — for "Token token=$PAGERDUTY_API_TOKEN" that
-# produces prefix "Token" and candidate "token=openshell:resolve:env:...",
+# produces prefix "Token" and candidate "token=<credential placeholder (openshell resolve-env)>",
 # which is not a resolvable placeholder shape (the literal "token=" defeats
 # both the plain-placeholder and the alias-prefix path, since alias prefixes
 # may only contain [A-Za-z0-9_.~-]). The request is rejected before it ever
@@ -82,7 +95,7 @@
 #       -- claude
 #
 # Inside the sandbox the agent sees PAGERDUTY_ACCESS_TOKEN set to an opaque
-# openshell:resolve:env:* placeholder, gateway-refreshed and never plaintext:
+# credential placeholder (openshell resolve-env), gateway-refreshed and never plaintext:
 #
 #   curl -H "Authorization: Bearer $PAGERDUTY_ACCESS_TOKEN" \
 #        -H "Accept: application/vnd.pagerduty+json;version=2" \

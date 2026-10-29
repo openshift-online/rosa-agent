@@ -59,10 +59,9 @@ skills live under `sandbox/skills/`.
 
 ## Scheduled jobs
 
-Three plain `batch/v1` CronJobs run the agent itself (registering the Hypershell
-gateway, minting an OIDC token, then `openshell sandbox create ... -- claude
---dangerously-skip-permissions --print "<job skill invocation>"`), applied
-directly to the `rosa-agent-stage` namespace with `oc apply -f` rather than
+Three plain `batch/v1` CronJobs run the agent itself using `openshellctl`
+(`gateway add`, `doctor`, then `sandbox create -f sandbox/templates/noninteractive.yaml`),
+applied directly to the `rosa-agent-stage` namespace with `oc apply -f` rather than
 through Konflux — Konflux's build clusters can't currently reach the
 Hypershell OIDC endpoint (see the header comment in each `*-cron.yaml`, and
 the `Scheduled jobs` comment in the `Makefile`). Each has a dedicated
