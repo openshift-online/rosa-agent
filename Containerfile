@@ -7,7 +7,7 @@ ARG GOLANGCI_LINT_VERSION=2.14.0
 ARG STATICCHECK_VERSION=2026.2.1
 ARG SHELLCHECK_VERSION=0.10.0
 ARG GLAB_VERSION=1.119.0
-ARG OPENSHELL_VERSION=0.0.109
+ARG OPENSHELLCTL_VERSION=0.1.5-rc.1
 
 RUN set -eux; \
     dnf -y install --setopt=install_weak_deps=False --nodocs \
@@ -43,14 +43,13 @@ RUN set -eux; \
       "https://gitlab.com/gitlab-org/cli/-/releases/v${GLAB_VERSION}/downloads/glab_${GLAB_VERSION}_linux_${ARCH}.tar.gz"; \
     tar -C /tmp -xzf /tmp/glab.tar.gz; \
     install -m0755 /tmp/bin/glab /usr/local/bin/glab; \
-    # --- openshell (OpenShell CLI) ---
-    OS_ARCH="${ARCH}"; \
-    if [ "${OS_ARCH}" = "amd64" ]; then OS_ARCH="x86_64"; fi; \
-    if [ "${OS_ARCH}" = "arm64" ]; then OS_ARCH="aarch64"; fi; \
-    curl -fsSLo /tmp/openshell.tar.gz \
-      "https://github.com/NVIDIA/OpenShell/releases/download/v${OPENSHELL_VERSION}/openshell-${OS_ARCH}-unknown-linux-musl.tar.gz"; \
-    tar -C /tmp -xzf /tmp/openshell.tar.gz; \
-    install -m0755 /tmp/openshell /usr/local/bin/openshell; \
+    # --- openshellctl ---
+    OCTL_ARCH="${ARCH}"; \
+    if [ "${OCTL_ARCH}" = "amd64" ]; then OCTL_ARCH="x86_64"; fi; \
+    curl -fsSLo /tmp/openshellctl.tar.gz \
+      "https://github.com/openshift-online/openshellctl/releases/download/v${OPENSHELLCTL_VERSION}/openshellctl_Linux_${OCTL_ARCH}.tar.gz"; \
+    tar -C /tmp -xzf /tmp/openshellctl.tar.gz openshellctl; \
+    install -m0755 /tmp/openshellctl /usr/local/bin/openshellctl; \
     # --- cleanup ---
     rm -rf /tmp/*
 
@@ -97,7 +96,7 @@ COPY --from=builder /usr/local/bin/golangci-lint /usr/local/bin/golangci-lint
 COPY --from=builder /usr/local/bin/staticcheck /usr/local/bin/staticcheck
 COPY --from=builder /usr/local/bin/shellcheck /usr/local/bin/shellcheck
 COPY --from=builder /usr/local/bin/glab /usr/local/bin/glab
-COPY --from=builder /usr/local/bin/openshell /usr/local/bin/openshell
+COPY --from=builder /usr/local/bin/openshellctl /usr/local/bin/openshellctl
 COPY --from=builder /usr/bin/claude /usr/bin/claude
 
 # --- user model (mirrors NVIDIA OpenShell-Community base sandbox) ---
