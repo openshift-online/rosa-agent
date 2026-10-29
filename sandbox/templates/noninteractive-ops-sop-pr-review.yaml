@@ -13,11 +13,7 @@ spec:
   providerRefs:
     - name: rosa-agent-vertex
     - name: rosa-agent-github
-    - name: rosa-agent-jira
     - name: ro-ci_pipelines
-  env:
-    JIRA_EMAIL: sd-sre-platform+rosa-agent@redhat.com
-    JIRA_BASE_URL: https://redhat.atlassian.net
   sessionOpts:
     approvalMode: auto
     noKeep: true

@@ -68,7 +68,6 @@ spec:
 
                   openshellctl doctor \
                     --provider rosa-agent-github \
-                    --provider rosa-agent-jira \
                     --provider rosa-agent-vertex \
                     --provider ro-go_modules
 

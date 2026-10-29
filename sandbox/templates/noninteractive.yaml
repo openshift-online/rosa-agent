@@ -14,10 +14,11 @@ spec:
     - name: rosa-agent-vertex
     - name: rosa-agent-github
     - name: rosa-agent-jira
-    # Job-specific providers are added per job (see each job's cron manifest):
-    #   sop-improve:      ro-go_modules
-    #   ops-sop-pr-review: ro-ci_pipelines
-    #   image-vuln-check: ro-go_modules, ro-image_inspect, ro-redhat_errata
+    # This is the base template for ad-hoc non-interactive sandboxes.
+    # Scheduled cron jobs each use their own job-specific template:
+    #   noninteractive-sop-improve.yaml
+    #   noninteractive-ops-sop-pr-review.yaml
+    #   noninteractive-image-vuln-check.yaml
   env:
     JIRA_EMAIL: sd-sre-platform+rosa-agent@redhat.com
     JIRA_BASE_URL: https://redhat.atlassian.net

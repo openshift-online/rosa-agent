@@ -463,7 +463,7 @@ intuition across. For `graphql`, `read-write` is `query` plus `mutation`; for
 | Provider name | Profile | Credential source |
 | --- | --- | --- |
 | `rosa-agent-vertex` | `google-vertex-ai` | Service-account key from Vault; rotated via refresh strategy |
-| `rosa-agent-github` | `github` | Fine-grained PAT from Vault |
+| `rosa-agent-github` | `github` | Classic PAT from Vault (fine-grained pending org approval) |
 | `rosa-agent-jira` | `atlassian-jira` | API token from Vault |
 | `rosa-agent-pagerduty` | `pagerduty` | API token from Vault; rotated via refresh strategy |
 
@@ -501,8 +501,9 @@ replacement provider. Three points:
    reached for inference.
 2. **WebSearch goes through Vertex.** Claude 4+ routes WebSearch through its
    Vertex endpoint, not through any Anthropic-side proxy.
-3. **WebFetch preflight skipped.** Claude Code normally sends a preflight HEAD
-   to `api.anthropic.com` before fetching external URLs. `skipWebFetchPreflight:
+3. **WebFetch preflight skipped.** Claude Code normally sends a preflight
+   request to `api.anthropic.com` (a domain-blocklist check) before fetching
+   external URLs. `skipWebFetchPreflight:
    true` in `sandbox/settings.json` disables that check. If WebFetch fails with
    a 403 at proxy, verify this key is the correct name in the installed Claude
    Code version.
