@@ -19,6 +19,7 @@ from pathlib import Path
 from check_hypershell import (
     Findings,
     _policy_yaml_to_json,
+    check_default_policy_network_rules_empty,
     check_gateway,
     check_gateway_name,
     check_json_string_fields,
@@ -712,6 +713,101 @@ class TestGenerateHypershell(unittest.TestCase):
         parsed = json.loads(policy_json)
         self.assertEqual(
             parsed["network_policies"]["test"]["name"], "back\\slash"
+        )
+
+
+class TestCheckDefaultPolicyNetworkRulesEmpty(unittest.TestCase):
+    """The baked policy must carry no network_policies entries after 0014.
+
+    Every egress grant comes from an attached provider profile; a rule in the
+    base policy defeats provider-level L7 enforcement via union semantics (one
+    allow anywhere admits the request). CI catches regressions here so a rule
+    added to default.yaml by mistake is caught before merge.
+    """
+
+    def _write_policy(self, src: dict, path: Path) -> None:
+        import yaml
+        path.write_text(yaml.dump(src))
+
+    def _empty_policy(self) -> dict:
+        return {
+            "version": 1,
+            "filesystem_policy": {
+                "include_workdir": True,
+                "read_only": [],
+                "read_write": ["/tmp", "/dev/null"],
+            },
+            "network_policies": {},
+        }
+
+    def test_passes_when_network_policies_is_empty_dict(self):
+        with tempfile.TemporaryDirectory() as d:
+            pp = Path(d) / "default.yaml"
+            self._write_policy(self._empty_policy(), pp)
+            findings = Findings()
+            check_default_policy_network_rules_empty(findings, _policy_path=pp)
+        self.assertEqual(findings.errors, [])
+
+    def test_passes_when_network_policies_key_is_absent(self):
+        src = self._empty_policy()
+        del src["network_policies"]
+        with tempfile.TemporaryDirectory() as d:
+            pp = Path(d) / "default.yaml"
+            self._write_policy(src, pp)
+            findings = Findings()
+            check_default_policy_network_rules_empty(findings, _policy_path=pp)
+        self.assertEqual(findings.errors, [])
+
+    def test_fails_when_network_policies_has_entries(self):
+        with tempfile.TemporaryDirectory() as d:
+            pp = Path(d) / "default.yaml"
+            self._write_policy(_minimal_policy_src(), pp)
+            findings = Findings()
+            check_default_policy_network_rules_empty(findings, _policy_path=pp)
+        self.assertEqual(len(findings.errors), 1)
+        self.assertIn("network_policies", findings.errors[0])
+        self.assertIn("test_rule", findings.errors[0])
+
+    def test_error_names_every_rule_present(self):
+        src = _minimal_policy_src()
+        src["network_policies"]["another_rule"] = {
+            "name": "another-rule",
+            "endpoints": [{"host": "other.example.com", "port": 443,
+                           "access": "read-only", "protocol": "rest",
+                           "enforcement": "enforce"}],
+            "binaries": [{"path": "/usr/bin/curl"}],
+        }
+        with tempfile.TemporaryDirectory() as d:
+            pp = Path(d) / "default.yaml"
+            self._write_policy(src, pp)
+            findings = Findings()
+            check_default_policy_network_rules_empty(findings, _policy_path=pp)
+        self.assertEqual(len(findings.errors), 1)
+        self.assertIn("test_rule", findings.errors[0])
+        self.assertIn("another_rule", findings.errors[0])
+
+    def test_fails_when_policy_file_is_missing(self):
+        with tempfile.TemporaryDirectory() as d:
+            pp = Path(d) / "nonexistent.yaml"
+            findings = Findings()
+            check_default_policy_network_rules_empty(findings, _policy_path=pp)
+        self.assertEqual(len(findings.errors), 1)
+        self.assertIn("not found", findings.errors[0])
+
+    def test_real_repo_passes_after_emptying(self):
+        # Regression guard: once default.yaml is emptied this test must remain
+        # green. If it fails, the baked policy has had rules added back.
+        repo_root = Path(__file__).resolve().parents[2]
+        policy_path = repo_root / "policies/default.yaml"
+        if not policy_path.exists():
+            self.skipTest("real repo file not present")
+        findings = Findings()
+        check_default_policy_network_rules_empty(findings, _policy_path=policy_path)
+        self.assertEqual(
+            findings.errors,
+            [],
+            "policies/default.yaml still has network_policies entries — "
+            "run the 0014 migration or move the rule to provider-profiles/.",
         )
 
 
