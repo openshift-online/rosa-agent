@@ -1,19 +1,19 @@
 ---
 name: pmr-action-item
-description: Investigate and resolve a PMR (Post-Mortem Review) action-item Jira ticket (labels PMR-AI and PMR-AI-Ready) assigned to the rosa-agent user - read the ticket, fork the repo it concerns, implement the described work on a feature branch, run security review, then critical code review with a different model, implement review findings, re-run security check, and open a PR. Built for per-ticket invocation (one issue key per run); a future job/cron could enumerate PMR-AI-Ready tickets and invoke this once per key, the way job-image-vuln-check fans out over targets. Use when asked to investigate, work, or action a PMR ticket/action item, or when given a Jira issue key labeled PMR-AI-Ready. Trigger keywords - PMR, PMR action item, PMR-AI-Ready, post-mortem action item, investigate ticket, action item ticket.
+description: Investigate and resolve a PMR (Post-Mortem Review) action-item Jira ticket (labels pmr-ai and pmr-ai-ready) assigned to the rosa-agent user - read the ticket, fork the repo it concerns, implement the described work on a feature branch, run security review, then critical code review with a different model, implement review findings, re-run security check, and open a PR. Built for per-ticket invocation (one issue key per run); a future job/cron could enumerate pmr-ai-ready tickets and invoke this once per key, the way job-image-vuln-check fans out over targets. Use when asked to investigate, work, or action a PMR ticket/action item, or when given a Jira issue key labeled pmr-ai-ready. Trigger keywords - PMR, PMR action item, pmr-ai-ready, post-mortem action item, investigate ticket, action item ticket.
 ---
 
 # PMR action item: investigate a ticket, fix it, PR it
 
 This skill handles one Jira ticket per run - a PMR (Post-Mortem Review)
-action item labeled `PMR-AI` and `PMR-AI-Ready`, assigned to the `rosa-agent` user. It is not
+action item labeled `pmr-ai` and `pmr-ai-ready`, assigned to the `rosa-agent` user. It is not
 itself a scheduled job: it takes a single issue key and works that one
 ticket end to end. A future enumerator/CronJob could discover every open
-`PMR-AI-Ready` ticket assigned to `rosa-agent` and invoke this skill once per key
+`pmr-ai-ready` ticket assigned to `rosa-agent` and invoke this skill once per key
 (mirroring how `job-image-vuln-check` fans out over its target list), but
 that enumeration is out of scope here.
 
-**The `PMR-AI-Ready` label indicates:**
+**The `pmr-ai-ready` label indicates:**
 - The ticket has been through the proposal stage (`pmr-remediation-analysis` skill)
 - A structured remediation proposal exists
 - Human grooming gate has approved (or is pending)
@@ -54,8 +54,8 @@ and run its auth-detection block once. Then:
 
 `GET $JB/rest/api/3/issue/<ISSUE-KEY>`
 
-- Confirm BOTH the `PMR-AI` and `PMR-AI-Ready` labels are present on the ticket.
-  - If `PMR-AI-Ready` is missing → the ticket hasn't been through the proposal
+- Confirm BOTH the `pmr-ai` and `pmr-ai-ready` labels are present on the ticket.
+  - If `pmr-ai-ready` is missing → the ticket hasn't been through the proposal
     stage yet (`pmr-remediation-analysis` skill). Stop and report via
     `file_failure_issue` - this is a workflow violation, not a ticket blocker.
   - If neither label is present → stop and report via `file_failure_issue`

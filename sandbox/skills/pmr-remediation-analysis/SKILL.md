@@ -90,19 +90,19 @@ MYSELF=$(jira -H "Accept: application/json" "$JB/rest/api/3/myself")
 AGENT_ACCOUNT_ID=$(echo "$MYSELF" | python3 -I -c "import sys,json; print(json.load(sys.stdin)['accountId'])")
 ```
 
-### Step D2: Query for Unprocessed PMR-AI Tickets
+### Step D2: Query for Unprocessed pmr-ai Tickets
 
 Find tickets that:
 - Have the `pmr-ai` label
 - Are assigned to rosa-agent (this agent)
-- Do NOT yet have the `PMR-AI-Ready` label (not yet through analysis)
+- Do NOT yet have the `pmr-ai-ready` label (not yet through analysis)
 - Are not closed/done
 
 ```shell
 jira -H "Content-Type: application/json" \
   -X POST "$JB/rest/api/3/search/jql" \
   -d "{
-    \"jql\": \"labels = \\\"pmr-ai\\\" AND assignee = \\\"${AGENT_ACCOUNT_ID}\\\" AND labels NOT IN (\\\"PMR-AI-Ready\\\") AND statusCategory != Done ORDER BY created ASC\",
+    \"jql\": \"labels = \\\"pmr-ai\\\" AND assignee = \\\"${AGENT_ACCOUNT_ID}\\\" AND labels NOT IN (\\\"pmr-ai-ready\\\") AND statusCategory != Done ORDER BY created ASC\",
     \"fields\": [\"summary\",\"description\",\"labels\",\"assignee\",\"reporter\",\"status\",\"comment\"],
     \"maxResults\": 50
   }"
@@ -589,7 +589,7 @@ recurrence. Address why this approach vs alternatives.]
 
 ### Step 8: Tag Jira Issue as Proposal-Ready
 
-After successfully generating a proposal (not a decline), tag the Jira issue with **`PMR-AI-Ready`** to signal that:
+After successfully generating a proposal (not a decline), tag the Jira issue with **`pmr-ai-ready`** to signal that:
 - Analysis is complete
 - Proposal is ready for human grooming gate
 - Issue is eligible for `pmr-action-item` implementation
@@ -597,10 +597,10 @@ After successfully generating a proposal (not a decline), tag the Jira issue wit
 **Per `AGENTS.md`, use the `jira` skill for all Jira operations:**
 
 ```shell
-# Add PMR-AI-Ready label to the issue
+# Add pmr-ai-ready label to the issue
 jira -H "Content-Type: application/json" \
   -X PUT "$JB/rest/api/3/issue/<ISSUE-KEY>" \
-  -d '{"update":{"labels":[{"add":"PMR-AI-Ready"}]}}'
+  -d '{"update":{"labels":[{"add":"pmr-ai-ready"}]}}'
 ```
 
 **Do NOT tag if:**
@@ -709,7 +709,7 @@ User: /pmr-remediation-analysis (no ticket key)
 Cron: claude --dangerously-skip-permissions \
         --print "/pmr-remediation-analysis"
 
-→ Query Jira: labels=pmr-ai, assignee=rosa-agent, not PMR-AI-Ready
+→ Query Jira: labels=pmr-ai, assignee=rosa-agent, not pmr-ai-ready
 → For each ticket:
     → Check readiness
     → If incomplete: comment with ADF @mention of reporter, skip
@@ -811,7 +811,7 @@ Agent:
 
 ```
 Agent (no ticket key given, or cron-driven):
-→ Queries Jira: labels=pmr-ai, assignee=rosa-agent, not PMR-AI-Ready
+→ Queries Jira: labels=pmr-ai, assignee=rosa-agent, not pmr-ai-ready
 → Finds MCS-1434 (no description)
 → Readiness check fails: missing all 4 required elements
 → Posts ADF comment @mentioning reporter Eddie Rosentel with specific missing items
