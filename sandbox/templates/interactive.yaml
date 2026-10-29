@@ -12,6 +12,15 @@ spec:
     - name: rosa-agent-vertex
     - name: rosa-agent-github
     - name: rosa-agent-jira
+    - name: ro-go_modules
+    - name: ro-ci_pipelines
+    - name: ro-redhat_docs
+    # Opt-in: attach separately when needed for Konflux console access.
+    # - name: ro-konflux
+    # Opt-in: attach separately when needed for registry inspection.
+    # - name: ro-image_inspect
+    # Staged: enable once gitlab.cee.redhat.com is reachable and provider is created.
+    # - name: rosa-agent-gitlab
   env:
     JIRA_EMAIL: sd-sre-platform+rosa-agent@redhat.com
     JIRA_BASE_URL: https://redhat.atlassian.net

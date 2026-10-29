@@ -3,9 +3,12 @@
 # Exported from the working profile on ra-test-hyp1 (OpenShell v0.1.3-rhaiv.3,
 # 2026-10-20). This is the stock google-vertex-ai profile with two edits:
 #
-#   1. binaries: [/usr/bin/curl, /usr/bin/claude]
+#   1. binaries: [/usr/bin/claude]
 #      The stock profile has no binaries list, which means the OPA engine denies
 #      every connection (no binary is authorized to reach the endpoints).
+#      /usr/bin/curl is deliberately absent: no script uses curl to reach the
+#      Vertex AI endpoints (plan 0014 §4 — the SA token would give curl full
+#      Vertex API access, which is broader than needed).
 #
 #   2. allow_uninspected_credentials: true on all aiplatform endpoints.
 #      Claude Code's request body (~88KB) includes conversation history, which
@@ -141,7 +144,6 @@ endpoints:
     enforcement: enforce
     allow_uninspected_credentials: true
 binaries:
-  - /usr/bin/curl
   - /usr/bin/claude
 inference_capable: true
 discovery:
