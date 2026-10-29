@@ -48,7 +48,7 @@ RUN set -eux; \
     if [ "${OCTL_ARCH}" = "amd64" ]; then OCTL_ARCH="x86_64"; fi; \
     curl -fsSLo /tmp/openshellctl.tar.gz \
       "https://github.com/openshift-online/openshellctl/releases/download/v${OPENSHELLCTL_VERSION}/openshellctl_Linux_${OCTL_ARCH}.tar.gz"; \
-    tar -C /tmp -xzf /tmp/openshellctl.tar.gz openshellctl; \
+    tar --no-same-owner -C /tmp -xzf /tmp/openshellctl.tar.gz openshellctl; \
     install -m0755 /tmp/openshellctl /usr/local/bin/openshellctl; \
     # --- cleanup ---
     rm -rf /tmp/*
