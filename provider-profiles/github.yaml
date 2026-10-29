@@ -87,7 +87,9 @@ endpoints:
       # Labels
       - allow: { method: POST,   path: "/repos/*/*/labels" }
       - allow: { method: POST,   path: "/repos/*/*/issues/*/labels" }
-  # GraphQL stays read-only: nothing in this repo issues a GraphQL mutation.
+  # GraphQL: read-only enforced at protocol level. gh pr create and gh issue
+  # create use GraphQL mutations; those go through this endpoint at query/mutation
+  # semantic level. Pure gh api REST calls go through the REST block above.
   - host: api.github.com
     port: 443
     path: /graphql
@@ -108,8 +110,8 @@ endpoints:
       - allow: { method: HEAD,    path: "/**" }
       - allow: { method: OPTIONS, path: "/**" }
       - allow: { method: POST,    path: "/**/git-upload-pack" }
-      # Push only to rosa-agent's own fork namespace. ** matches nested paths
-      # (e.g. rosa-agent/org/repo) but not arbitrary org repos.
+      # Push only to rosa-agent's own fork namespace. * matches exactly one
+      # path segment (repo name). rosa-agent/org/repo would need ** and is denied.
       - allow: { method: POST,    path: "/rosa-agent/*/git-receive-pack" }
   # Clone redirects here for pack data. Read-only; no POST needed.
   - host: codeload.github.com
