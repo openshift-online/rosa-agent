@@ -56,36 +56,49 @@ endpoints:
   # REST API v4 and Git transport share one host on GitLab.
   # Reads: GET/HEAD/OPTIONS on any API or repository path.
   # Writes: only the operations below; everything else is denied by deny_rules.
+  # GraphQL: protocol: graphql at read-only enforces query-only at the
+  # semantic level (OpenShell parses the operation type). REST POST /api/graphql
+  # is NOT in the rules list — only the typed graphql endpoint below covers it.
+  - host: gitlab.cee.redhat.com
+    port: 443
+    path: /api/graphql
+    protocol: graphql
+    access: read-only
+    enforcement: enforce
+  # REST API v4 and Git transport.
+  # deny_rules block dangerous mutations before the gateway evaluates allows.
+  # (OpenShell v0.1.5: deny_rules is a sibling key on the endpoint, not entries
+  # inside rules:; L7RuleProfile only has an allow field.)
   - host: gitlab.cee.redhat.com
     port: 443
     protocol: rest
     enforcement: enforce
-    rules:
+    deny_rules:
       # Deny guards — dangerous mutations blocked explicitly (plan 0014 §4a,
       # translating plan 0004 §7.4 deny guards from github.yaml to GitLab).
-      # Listed before allows so a future catch-all allow cannot bypass them.
-      - deny: { method: DELETE,  path: "/**" }
-      - deny: { method: PUT,     path: "/api/v4/projects/*/merge_requests/*/merge" }
-      - deny: { method: POST,    path: "/api/v4/projects/*/merge_requests/*/approve" }
-      - deny: { method: POST,    path: "/api/v4/projects/*/merge_requests/*/unapprove" }
-      - deny: { method: "*",     path: "/api/v4/projects/*/hooks/**" }
-      - deny: { method: "*",     path: "/api/v4/projects/*/members/**" }
-      - deny: { method: "*",     path: "/api/v4/projects/*/protected_branches/**" }
-      - deny: { method: "*",     path: "/api/v4/projects/*/protected_tags/**" }
-      - deny: { method: "*",     path: "/api/v4/projects/*/deploy_keys/**" }
-      - deny: { method: "*",     path: "/api/v4/projects/*/deploy_tokens/**" }
-      - deny: { method: "*",     path: "/api/v4/projects/*/access_tokens/**" }
-      - deny: { method: "*",     path: "/api/v4/projects/*/variables/**" }
-      - deny: { method: "*",     path: "/api/v4/projects/*/pipeline_schedules/**" }
-      - deny: { method: "*",     path: "/api/v4/projects/*/triggers/**" }
-      - deny: { method: PUT,     path: "/api/v4/projects/*" }
-      - deny: { method: POST,    path: "/api/v4/groups/**" }
-      - deny: { method: PUT,     path: "/api/v4/groups/**" }
-      - deny: { method: DELETE,  path: "/api/v4/groups/**" }
-      - deny: { method: POST,    path: "/api/v4/user/**" }
-      - deny: { method: PUT,     path: "/api/v4/user/**" }
-      - deny: { method: DELETE,  path: "/api/v4/user/**" }
-      - deny: { method: "*",     path: "/api/v4/personal_access_tokens/**" }
+      - { method: DELETE,  path: "/**" }
+      - { method: PUT,     path: "/api/v4/projects/*/merge_requests/*/merge" }
+      - { method: POST,    path: "/api/v4/projects/*/merge_requests/*/approve" }
+      - { method: POST,    path: "/api/v4/projects/*/merge_requests/*/unapprove" }
+      - { method: "*",     path: "/api/v4/projects/*/hooks/**" }
+      - { method: "*",     path: "/api/v4/projects/*/members/**" }
+      - { method: "*",     path: "/api/v4/projects/*/protected_branches/**" }
+      - { method: "*",     path: "/api/v4/projects/*/protected_tags/**" }
+      - { method: "*",     path: "/api/v4/projects/*/deploy_keys/**" }
+      - { method: "*",     path: "/api/v4/projects/*/deploy_tokens/**" }
+      - { method: "*",     path: "/api/v4/projects/*/access_tokens/**" }
+      - { method: "*",     path: "/api/v4/projects/*/variables/**" }
+      - { method: "*",     path: "/api/v4/projects/*/pipeline_schedules/**" }
+      - { method: "*",     path: "/api/v4/projects/*/triggers/**" }
+      - { method: PUT,     path: "/api/v4/projects/*" }
+      - { method: POST,    path: "/api/v4/groups/**" }
+      - { method: PUT,     path: "/api/v4/groups/**" }
+      - { method: DELETE,  path: "/api/v4/groups/**" }
+      - { method: POST,    path: "/api/v4/user/**" }
+      - { method: PUT,     path: "/api/v4/user/**" }
+      - { method: DELETE,  path: "/api/v4/user/**" }
+      - { method: "*",     path: "/api/v4/personal_access_tokens/**" }
+    rules:
       # Reads
       - allow: { method: GET,     path: "/**" }
       - allow: { method: HEAD,    path: "/**" }
@@ -102,10 +115,6 @@ endpoints:
       - allow: { method: POST,   path: "/api/v4/projects/*/merge_requests/*/notes" }
       # Labels
       - allow: { method: POST,   path: "/api/v4/projects/*/labels" }
-      # GraphQL — POST allows both queries and mutations; no body inspection
-      # available to restrict to read-only. Mutations that produce side effects
-      # rely on the deny guards above catching specific dangerous operations.
-      - allow: { method: POST,   path: "/api/graphql" }
       # Git transport — clone and fetch (git-upload-pack)
       - allow: { method: POST,   path: "/**/git-upload-pack" }
       # Git transport — push, scoped to bot namespace, one path level only.
