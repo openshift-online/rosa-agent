@@ -61,33 +61,9 @@ endpoints:
     protocol: rest
     enforcement: enforce
     rules:
-      # Reads
-      - allow: { method: GET,     path: "/**" }
-      - allow: { method: HEAD,    path: "/**" }
-      - allow: { method: OPTIONS, path: "/**" }
-      # Fork
-      - allow: { method: POST,   path: "/api/v4/projects/*/fork" }
-      # Merge request lifecycle
-      - allow: { method: POST,   path: "/api/v4/projects/*/merge_requests" }
-      - allow: { method: PUT,    path: "/api/v4/projects/*/merge_requests/*" }
-      # Issues
-      - allow: { method: POST,   path: "/api/v4/projects/*/issues" }
-      # Notes (issue and MR comments)
-      - allow: { method: POST,   path: "/api/v4/projects/*/issues/*/notes" }
-      - allow: { method: POST,   path: "/api/v4/projects/*/merge_requests/*/notes" }
-      # Labels
-      - allow: { method: POST,   path: "/api/v4/projects/*/labels" }
-      # GraphQL (read-only: queries only)
-      - allow: { method: POST,   path: "/api/graphql" }
-      # Git transport — clone and fetch (git-upload-pack)
-      - allow: { method: POST,   path: "/**/git-upload-pack" }
-      # Git transport — push, scoped to bot namespace only.
-      # PLACEHOLDER: replace <bot-namespace> with the real rosa-agent namespace
-      # before creating the provider.
-      - allow: { method: POST,   path: "/<bot-namespace>/**/git-receive-pack" }
       # Deny guards — dangerous mutations blocked explicitly (plan 0014 §4a,
       # translating plan 0004 §7.4 deny guards from github.yaml to GitLab).
-      # These must be listed before any would-be catch-all allows.
+      # Listed before allows so a future catch-all allow cannot bypass them.
       - deny: { method: DELETE,  path: "/**" }
       - deny: { method: PUT,     path: "/api/v4/projects/*/merge_requests/*/merge" }
       - deny: { method: POST,    path: "/api/v4/projects/*/merge_requests/*/approve" }
@@ -110,6 +86,32 @@ endpoints:
       - deny: { method: PUT,     path: "/api/v4/user/**" }
       - deny: { method: DELETE,  path: "/api/v4/user/**" }
       - deny: { method: "*",     path: "/api/v4/personal_access_tokens/**" }
+      # Reads
+      - allow: { method: GET,     path: "/**" }
+      - allow: { method: HEAD,    path: "/**" }
+      - allow: { method: OPTIONS, path: "/**" }
+      # Fork
+      - allow: { method: POST,   path: "/api/v4/projects/*/fork" }
+      # Merge request lifecycle
+      - allow: { method: POST,   path: "/api/v4/projects/*/merge_requests" }
+      - allow: { method: PUT,    path: "/api/v4/projects/*/merge_requests/*" }
+      # Issues
+      - allow: { method: POST,   path: "/api/v4/projects/*/issues" }
+      # Notes (issue and MR comments)
+      - allow: { method: POST,   path: "/api/v4/projects/*/issues/*/notes" }
+      - allow: { method: POST,   path: "/api/v4/projects/*/merge_requests/*/notes" }
+      # Labels
+      - allow: { method: POST,   path: "/api/v4/projects/*/labels" }
+      # GraphQL — POST allows both queries and mutations; no body inspection
+      # available to restrict to read-only. Mutations that produce side effects
+      # rely on the deny guards above catching specific dangerous operations.
+      - allow: { method: POST,   path: "/api/graphql" }
+      # Git transport — clone and fetch (git-upload-pack)
+      - allow: { method: POST,   path: "/**/git-upload-pack" }
+      # Git transport — push, scoped to bot namespace, one path level only.
+      # PLACEHOLDER: replace <bot-namespace> with the real rosa-agent namespace
+      # before creating the provider.
+      - allow: { method: POST,   path: "/<bot-namespace>/*/git-receive-pack" }
 # Parity with github.yaml: glab + git. claude is excluded (see github.yaml
 # for the reasoning). Add it here in the same PR if it is ever added to
 # github.yaml. /usr/local/bin/glab is where the image installs glab

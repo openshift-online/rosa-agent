@@ -786,6 +786,16 @@ class TestCheckDefaultPolicyNetworkRulesEmpty(unittest.TestCase):
         self.assertIn("test_rule", findings.errors[0])
         self.assertIn("another_rule", findings.errors[0])
 
+    def test_passes_when_network_policies_is_null(self):
+        src = self._empty_policy()
+        src["network_policies"] = None
+        with tempfile.TemporaryDirectory() as d:
+            pp = Path(d) / "default.yaml"
+            self._write_policy(src, pp)
+            findings = Findings()
+            check_default_policy_network_rules_empty(findings, _policy_path=pp)
+        self.assertEqual(findings.errors, [])
+
     def test_fails_when_policy_file_is_missing(self):
         with tempfile.TemporaryDirectory() as d:
             pp = Path(d) / "nonexistent.yaml"
