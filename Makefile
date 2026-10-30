@@ -11,7 +11,7 @@ SANDBOX_TAG ?= $(shell git rev-parse --short=7 HEAD)
 SANDBOX_CONTAINERFILE := Containerfile
 SANDBOX_CONTEXT := .
 
-.PHONY: lint markdown-lint check-placeholders lint-sandbox check-hypershell generate-hypershell test test-hack sandbox-build sandbox-push require-sandbox-image
+.PHONY: lint markdown-lint check-placeholders lint-sandbox check-hypershell generate-hypershell test test-hack test-e2e-nested-sandbox sandbox-build sandbox-push require-sandbox-image openshell-provider openshell-profile openshell-provider-only openshell-gateway openshell-vault-login
 
 # Parent lint target: runs every linter. The OpenShift CI `ci/prow/lint`
 # presubmit runs `make lint`. Add new linters (shell, yaml, ...) as their own
@@ -115,6 +115,93 @@ sandbox-push: require-sandbox-image sandbox-build
 	$(CONTAINER_ENGINE) push $(SANDBOX_IMAGE):$(SANDBOX_TAG)
 	$(CONTAINER_ENGINE) push $(SANDBOX_IMAGE):latest
 	@echo "Pushed $(SANDBOX_IMAGE):$(SANDBOX_TAG)"
+
+# ---------------------------------------------------------------------------
+# OpenShell provider provisioning
+#
+# Vault-driven, idempotent Make targets that put the openshell provider profile
+# and provider on the gateway. Requires: VAULT_ADDR, and either a valid
+# ~/.vault-token or the three OPENSHELL_VAULT_* exports below. Two CLIs are
+# needed because openshellctl has no profile import/update (stubs), and the
+# Rust openshell has no Vault integration. openshellctl bridges them by writing
+# a token file that the Rust CLI reads (token refresh --write).
+#
+# Required exports (defaults shown):
+#   VAULT_ADDR                         (no default — must be set)
+#   OPENSHELL_VAULT_KV_MOUNT ?= osd-sre
+#   OPENSHELL_VAULT_KV_PATH  ?= rosa-agent
+#   OPENSHELL_VAULT_FIELD_PREFIX ?= hypershell
+# ---------------------------------------------------------------------------
+
+OPENSHELL_GATEWAY_NAME    ?= rosa-agent
+OPENSHELL_PROFILE_ID      := openshell
+OPENSHELL_PROVIDER        := rosa-agent-openshell
+OPENSHELL_VAULT_KV_MOUNT  ?= osd-sre
+OPENSHELL_VAULT_KV_PATH   ?= rosa-agent
+OPENSHELL_VAULT_FIELD_PREFIX ?= hypershell
+VAULT_SECRET_FIELD        := hypershell-oidc-client-secret
+
+# Convenience alias: run all provisioning steps in order.
+openshell-provider: openshell-profile openshell-provider-only
+
+# Log in to Vault if no valid token exists. Does nothing if a valid token is
+# already cached in ~/.vault-token or VAULT_TOKEN.
+openshell-vault-login:
+	@vault token lookup >/dev/null 2>&1 || vault login -method=oidc
+
+# Add the gateway to the local openshellctl registry if not already present,
+# then refresh the token so the Rust openshell CLI can use it.
+openshell-gateway: openshell-vault-login
+	@command -v openshellctl >/dev/null 2>&1 || { echo "ERROR: openshellctl not found on PATH"; exit 1; }
+	@command -v openshell   >/dev/null 2>&1 || { echo "ERROR: openshell not found on PATH (Rust CLI required for profile import)"; exit 1; }
+	openshellctl gateway list --output json 2>/dev/null \
+	  | python3 -c 'import json,sys; gws=json.load(sys.stdin); gws=gws if isinstance(gws,list) else gws.get("gateways",gws.get("items",[])); sys.exit(0 if any(g.get("name")=="'"$(OPENSHELL_GATEWAY_NAME)"'" for g in gws) else 1)' \
+	  2>/dev/null || \
+	  openshellctl gateway add \
+	    "$$(vault kv get -mount=$(OPENSHELL_VAULT_KV_MOUNT) -field=$(OPENSHELL_VAULT_FIELD_PREFIX)-gateway-endpoint $(OPENSHELL_VAULT_KV_PATH))" \
+	    --name $(OPENSHELL_GATEWAY_NAME) \
+	    --vault-kv-mount $(OPENSHELL_VAULT_KV_MOUNT) \
+	    --vault-kv-path $(OPENSHELL_VAULT_KV_PATH) \
+	    --vault-field-prefix $(OPENSHELL_VAULT_FIELD_PREFIX)
+	openshellctl -g $(OPENSHELL_GATEWAY_NAME) token refresh --write --no-browser
+
+# Lint and import-or-update the provider profile on the gateway.
+openshell-profile: openshell-gateway
+	openshell -g $(OPENSHELL_GATEWAY_NAME) profile lint --file provider-profiles/openshell.yaml
+	hack/openshell_profile_apply.sh $(OPENSHELL_GATEWAY_NAME) provider-profiles/openshell.yaml --global
+
+# Create-or-update the provider, reading the OIDC secret from Vault into env
+# so the secret value never reaches argv or Make output.
+#
+# OPENSHELL_TOKEN pins openshellctl's auth to the static token written by
+# openshell-gateway (token refresh --write). Without this, openshellctl reads
+# OPENSHELL_OIDC_CLIENT_SECRET from the environment as its own auth credential
+# (vaultauth.go:171 sets Overrides.ClientSecretSource=true), attempts a
+# client-credentials exchange with an empty client-id, Keycloak rejects it,
+# and the exchanger enters backoff — causing provider get and provider create
+# to both fail. OPENSHELL_TOKEN takes precedence over client-credentials
+# (pkg/auth/resolve.go:72), so the secret in env becomes inert for auth and
+# is used only by ParseCredentialPairs for the --credential KEY lookup.
+openshell-provider-only: openshell-gateway
+	env OPENSHELL_TOKEN="$$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["access_token"])' \
+	      "$${XDG_CONFIG_HOME:-$$HOME/.config}/openshell/gateways/$(OPENSHELL_GATEWAY_NAME)/oidc_token.json")" \
+	    OPENSHELL_OIDC_CLIENT_SECRET="$$(vault kv get -mount=$(OPENSHELL_VAULT_KV_MOUNT) -field=$(VAULT_SECRET_FIELD) $(OPENSHELL_VAULT_KV_PATH))" \
+	  hack/openshell_provider_apply.sh \
+	    $(OPENSHELL_GATEWAY_NAME) \
+	    $(OPENSHELL_PROVIDER) \
+	    $(OPENSHELL_PROFILE_ID) \
+	    OPENSHELL_OIDC_CLIENT_SECRET
+
+# ---------------------------------------------------------------------------
+# E2E tests — human-run only; Prow/Konflux cannot reach the HyperShell OIDC
+# endpoint, so this target is excluded from `make test`. Requires: VAULT_ADDR
+# plus the same OPENSHELL_VAULT_* exports as the provisioning targets above.
+# ---------------------------------------------------------------------------
+
+# Nested-sandbox E2E: three ordered checks proving the openshell profile gates
+# access correctly and that a sandbox can create a child sandbox.
+test-e2e-nested-sandbox: openshell-vault-login
+	bash hack/e2e/nested_sandbox.sh
 
 # ---------------------------------------------------------------------------
 # Scheduled jobs

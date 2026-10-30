@@ -185,6 +185,17 @@ network_policies:
   # narrowing only exists at this profile's L7 allow-list. A coarse block here
   # would union over and defeat it. Attach the pagerduty provider to grant
   # PagerDuty access; do not add it here.
+  # NOTE: OpenShell gateway and Keycloak egress are intentionally NOT in this
+  # baked policy. The `openshell` provider profile (provider-profiles/openshell.yaml)
+  # composes Keycloak endpoints (keycloak.hyp2.infra.hypershell.app and any
+  # future hyp1/hyp0 equivalents) with request_body_credential_rewrite: true
+  # and enforcement: enforce, so that OPENSHELL_OIDC_CLIENT_SECRET is substituted
+  # only on the token-mint POST. The gateway host
+  # (gw-openshell-*.hyp2-spoke1.infra.hypershell.app) is L4 and carries no
+  # credential — authorization is enforced server-side by the SA role. A coarse
+  # block here would union over the Keycloak endpoint rules and allow
+  # OPENSHELL_OIDC_CLIENT_SECRET to be request-body-rewritten against any host.
+  # Attach the openshell provider to grant this access; do not add it here.
   gitlab_cee:
     name: gitlab-cee
     endpoints:
