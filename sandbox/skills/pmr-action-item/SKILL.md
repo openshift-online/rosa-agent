@@ -267,20 +267,17 @@ yourself - treat it as a blocker (step 10): comment on the ticket describing
 the exact finding, and stop. Never open a PR carrying an unresolved CONFIRMED
 finding.
 
-## 7. Critical code review with independent model - mandatory
+## 7. Two parallel code reviews with independent models - mandatory
 
-After the security fan-out passes, perform a comprehensive code review using a
-**different model** than the one that implemented the change. This provides an
-independent perspective on code quality, correctness, and best practices.
+After the security fan-out passes, run **two parallel reviews** using different
+models. Fan both out simultaneously using the Agent tool so they run concurrently;
+collect both sets of findings before proceeding.
 
-**Use the Agent tool with `model="fable"` parameter** to spawn a code-review
-subagent running Claude Fable (or `model="opus"` if Fable is unavailable, or
-`model="haiku"` as a fallback). The key is using a different model than Sonnet
-for independent perspective.
+### 7a. Code quality review
 
-**To change the review model**: Edit the `model` parameter in the Agent call
-below. Current default is `"fable"`. Change to `"opus"` or `"haiku"` based on
-what's available in Vertex AI.
+Spawn a subagent with **`model="fable"`** (or `model="opus"` if Fable is
+unavailable, `model="haiku"` as a last fallback) to review code quality,
+correctness, and best practices.
 
 Give the reviewing agent:
 
@@ -288,7 +285,7 @@ Give the reviewing agent:
 - The original Jira ticket context (what was requested)
 - The target repository's conventions (language, style, patterns observed)
 
-Ask the reviewing agent to critically assess:
+Ask it to critically assess:
 
 1. **Correctness** - does the code actually solve the ticket's requirement?
    Does it handle edge cases? Are there logic errors or off-by-one mistakes?
@@ -301,43 +298,79 @@ Ask the reviewing agent to critically assess:
 6. **Performance** - obvious inefficiencies, unnecessary allocations, N+1
    queries
 
-The reviewer must return **structured findings** with:
-- **Severity**: CRITICAL (blocks PR), IMPORTANT (should fix), MINOR (nice-to-have)
-- **File and line number**
-- **Specific issue** - not vague ("improve error handling") but concrete
-  ("function X doesn't check for nil Y before calling Y.Method()")
-- **Suggested fix** - what specific change resolves it
+### 7b. Proposal adherence review (PMR-specific) - mandatory
 
-**CRITICAL findings block the PR** - proceed to step 8 to implement them.
-IMPORTANT findings should be implemented if straightforward. MINOR findings can
-be noted but don't block.
+Spawn a **second, separate subagent** with **`model="opus"`** (or `model="haiku"`
+if Opus is unavailable) to verify the implementation matches the approved
+remediation proposal. This reviewer is scoped entirely to proposal adherence —
+it does not re-do the quality review above.
 
-## 8. Implement code review findings
+Give the reviewing agent:
 
-For each CRITICAL and IMPORTANT finding from step 7:
+- The approved remediation proposal — read from the Jira ticket's comments
+  (posted by the `pmr-remediation-analysis` skill before the `pmr-ai-ready` tag
+  was applied) or from the ticket description
+- The full diff (`git diff main...HEAD` or equivalent)
 
-1. Read the specific file and line
-2. Implement the suggested fix (or a better alternative if you have one)
+Ask it to assess:
+
+1. **Failure mechanism addressed** - does the implementation actually prevent
+   the failure mechanism identified in the proposal? Or does it treat a symptom
+   while leaving the root cause intact?
+2. **Scope adherence** - does the diff stay within the files and components
+   named in the proposal? Any unexplained scope creep is a finding.
+3. **Approach fidelity** - does the implementation follow the "How" described in
+   the proposal, or did it take a materially different approach? If different,
+   is the deviation justified and at least as sound?
+4. **Verification implemented** - does the diff include the tests and
+   observability work the proposal specified in its "Verification Approach"?
+5. **Workaround check** - if the proposal called for a code/architectural fix,
+   does the implementation deliver that (not a workaround)?
+
+The reviewer must return structured findings with:
+- **Severity**: CRITICAL (blocks PR), IMPORTANT (should fix), MINOR (noted only)
+- **Proposal section** the finding relates to (Failure Mechanism / Proposed
+  Change / Verification / Scope)
+- **Specific discrepancy** — exact quote from proposal vs what the diff does
+
+**CRITICAL findings from either 7a or 7b block the PR.**
+
+### Handling findings from steps 7a and 7b
+
+Collect all findings from both reviewers before acting. Then:
+
+- **CRITICAL findings** (from either reviewer) → proceed to step 8 to implement.
+  If you cannot safely implement a CRITICAL finding, treat it as a blocker
+  (step 10).
+- **IMPORTANT findings** should be implemented if straightforward.
+- **MINOR findings** can be noted but don't block.
+
+## 8. Implement review findings
+
+For each CRITICAL and IMPORTANT finding from steps 7a and 7b:
+
+1. Read the specific file and line (or proposal section for 7b findings)
+2. Implement the fix (or a better alternative if you have one)
 3. Run the test suite again - it must still pass
-4. Commit the fix with a message like: `Address code review: <brief description>`
+4. Commit with a message like: `Address review: <brief description>`
 
-If you cannot safely implement a CRITICAL finding (e.g. it requires domain
-knowledge you don't have, or the suggested fix itself seems wrong), treat it as
-a blocker (step 10): comment on the ticket with the specific review finding and
-why you can't resolve it, then stop.
+If you cannot safely implement a CRITICAL finding (it requires domain knowledge
+you don't have, or the suggested fix itself seems wrong), treat it as a blocker
+(step 10): comment on the ticket with the specific finding and why you can't
+resolve it, then stop.
 
 ## 9. Re-run security fan-out after implementing review findings
 
-After implementing code review changes, **re-run the full security fan-out from
+After implementing review changes, **re-run the full security fan-out from
 step 6** (parallel subagents + security-review skill) against the updated diff.
 
 The review fixes may have introduced new code that needs security vetting. Any
 CONFIRMED security finding at this stage means: fix it and loop back through
-steps 7-9 until both security and code review are clean, or treat it as a
+steps 7-9 until both security and both code reviews are clean, or treat it as a
 blocker (step 10) if you can't safely fix it.
 
-**Only proceed to step 11 (open PR) when BOTH security review AND code review
-are clean with no unresolved CONFIRMED/CRITICAL findings.**
+**Only proceed to step 11 (open PR) when security review AND both code reviews
+(7a and 7b) are clean with no unresolved CONFIRMED/CRITICAL findings.**
 
 ## 10. Blockers - especially access issues - go on the ticket
 
@@ -412,8 +445,9 @@ comment summarizing what was changed and why.
 
 - Never force-push, and never force a fork-sync past a divergence.
 - Never skip or weaken the security fan-out in step 6 or 9 to save time.
-- Never skip the critical code review in step 7 - the independent model review
-  is mandatory, not optional.
+- Never skip either code review in step 7 (7a quality review and 7b proposal
+  adherence review) — both are mandatory. Running them in parallel is efficient
+  but sequential execution is also valid; what is not valid is skipping one.
 - Never skip the deduplication check (step 3a) or the In Progress transition
   (step 2b) — these are what prevent duplicate PRs on cron-driven runs.
 - Never leave a ticket In Progress on exit without either a PR link (step 12)
