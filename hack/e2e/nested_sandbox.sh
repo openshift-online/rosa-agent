@@ -96,28 +96,51 @@ _run_sandbox() {
 }
 
 # ---------------------------------------------------------------------------
-# Check 1: Negative control — no provider → proxy must deny the OIDC call.
-# A dummy client secret is injected so openshellctl actually attempts the
-# token POST to Keycloak; without the openshell provider the proxy has no
-# Keycloak endpoint in its allow-list and emits policy_denied.
-# Any nonzero exit WITHOUT a proxy-shaped denial is a FAIL (it means the
-# sandbox died before reaching the proxy — e.g. missing credential locally).
+# Check 1: Negative control — no provider → egress must be denied.
+#
+# The Go SDK wraps transport failures (connect/refused, EOF) in
+# oidc.discovery or ErrClientCredentials — the proxy's L7 "policy_denied"
+# JSON only surfaces on L7-inspected hosts; the gateway endpoint is L4, so
+# checking for "forbidden" or "denied" text is unreliable on a correctly-
+# gated gateway and would produce misleading FAIL results.
+#
+# Instead, SCRIPT1 emits structured markers:
+#   SANDBOX_UP          — sandbox ran (not a local failure before create)
+#   GATEWAY_ADD_RC=N    — exit code of openshellctl gateway add
+#   WHOAMI_OK/FAILED    — whether openshellctl whoami succeeded
+#
+# PASS iff: SANDBOX_UP present AND GATEWAY_ADD_RC≠0 AND WHOAMI_FAILED (not OK).
+# Denial-text patterns are printed as informational context only.
 # ---------------------------------------------------------------------------
 _info "=== Check 1: negative control (no provider) ==="
 NAME1="e2e-nested-${RUN_ID}-1"
-# Prefix OPENSHELL_OIDC_CLIENT_SECRET=e2e-dummy so openshellctl attempts the
-# token POST; the proxy (no openshell provider attached) must deny it.
-SCRIPT1="OPENSHELL_OIDC_CLIENT_SECRET=e2e-dummy openshellctl gateway add \"\$OPENSHELL_GATEWAY_ENDPOINT\" --name inner && openshellctl whoami"
+# Single-quoted so variable references expand inside the sandbox (not here).
+# OPENSHELL_OIDC_CLIENT_SECRET=e2e-dummy causes openshellctl to attempt the
+# Keycloak token POST; the proxy (no openshell provider) must deny the egress.
+# ';' instead of '&&' so whoami always runs regardless of gateway add result.
+SCRIPT1='echo SANDBOX_UP
+OPENSHELL_OIDC_CLIENT_SECRET=e2e-dummy openshellctl gateway add "$OPENSHELL_GATEWAY_ENDPOINT" --name inner
+rc=$?
+echo "GATEWAY_ADD_RC=$rc"
+openshellctl whoami >/dev/null 2>&1 && echo WHOAMI_OK || echo WHOAMI_FAILED'
 set +e
 output1=$(_run_sandbox "$NAME1" "$SCRIPT1" 2>&1)
 exit1=$?
 set -e
 
-if echo "$output1" | grep -qiE "policy.denied|policy_denied|credential_endpoint_mismatch|forbidden|denied"; then
-    _pass "Check 1: proxy denied the OIDC call as expected (exit=$exit1)"
+# Extract markers
+sandbox_up=$(echo "$output1" | grep -c "SANDBOX_UP" || true)
+gw_add_rc=$(echo "$output1" | grep "GATEWAY_ADD_RC=" | grep -oE "[0-9]+$" | head -1 || true)
+whoami_ok=$(echo "$output1" | grep -c "WHOAMI_OK" || true)
+whoami_failed=$(echo "$output1" | grep -c "WHOAMI_FAILED" || true)
+
+if [[ "$sandbox_up" -gt 0 && "${gw_add_rc:-0}" -ne 0 && "$whoami_ok" -eq 0 && "$whoami_failed" -gt 0 ]]; then
+    _pass "Check 1: sandbox ran, gateway add denied (rc=$gw_add_rc), whoami failed — provider gate enforced"
 else
-    _fail "Check 1: no proxy-shaped denial in output — provider gate may not be enforced (exit=$exit1)"
-    echo "--- output ---"
+    _fail "Check 1: expected SANDBOX_UP + GATEWAY_ADD_RC≠0 + WHOAMI_FAILED (not WHOAMI_OK); got sandbox_up=$sandbox_up gw_add_rc=${gw_add_rc:-unset} whoami_ok=$whoami_ok whoami_failed=$whoami_failed (exit=$exit1)"
+    # Print any denial text as informational context
+    echo "$output1" | grep -iE "policy.denied|policy_denied|credential_endpoint_mismatch|forbidden|denied" || true
+    echo "--- full output ---"
     echo "$output1"
 fi
 
