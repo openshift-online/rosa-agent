@@ -172,8 +172,20 @@ openshell-profile: openshell-gateway
 
 # Create-or-update the provider, reading the OIDC secret from Vault into env
 # so the secret value never reaches argv or Make output.
+#
+# OPENSHELL_TOKEN pins openshellctl's auth to the static token written by
+# openshell-gateway (token refresh --write). Without this, openshellctl reads
+# OPENSHELL_OIDC_CLIENT_SECRET from the environment as its own auth credential
+# (vaultauth.go:171 sets Overrides.ClientSecretSource=true), attempts a
+# client-credentials exchange with an empty client-id, Keycloak rejects it,
+# and the exchanger enters backoff — causing provider get and provider create
+# to both fail. OPENSHELL_TOKEN takes precedence over client-credentials
+# (pkg/auth/resolve.go:72), so the secret in env becomes inert for auth and
+# is used only by ParseCredentialPairs for the --credential KEY lookup.
 openshell-provider-only: openshell-gateway
-	env OPENSHELL_OIDC_CLIENT_SECRET="$$(vault kv get -mount=$(OPENSHELL_VAULT_KV_MOUNT) -field=$(VAULT_SECRET_FIELD) $(OPENSHELL_VAULT_KV_PATH))" \
+	env OPENSHELL_TOKEN="$$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["access_token"])' \
+	      "$${XDG_CONFIG_HOME:-$$HOME/.config}/openshell/gateways/$(OPENSHELL_GATEWAY_NAME)/oidc_token.json")" \
+	    OPENSHELL_OIDC_CLIENT_SECRET="$$(vault kv get -mount=$(OPENSHELL_VAULT_KV_MOUNT) -field=$(VAULT_SECRET_FIELD) $(OPENSHELL_VAULT_KV_PATH))" \
 	  hack/openshell_provider_apply.sh \
 	    $(OPENSHELL_GATEWAY_NAME) \
 	    $(OPENSHELL_PROVIDER) \
