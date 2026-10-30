@@ -154,7 +154,9 @@ openshell-vault-login:
 openshell-gateway: openshell-vault-login
 	@command -v openshellctl >/dev/null 2>&1 || { echo "ERROR: openshellctl not found on PATH"; exit 1; }
 	@command -v openshell   >/dev/null 2>&1 || { echo "ERROR: openshell not found on PATH (Rust CLI required for profile import)"; exit 1; }
-	openshellctl gateway list 2>/dev/null | awk 'NR>1{print $1}' | grep -qxF "$(OPENSHELL_GATEWAY_NAME)" || \
+	openshellctl gateway list --output json 2>/dev/null \
+	  | python3 -c 'import json,sys; gws=json.load(sys.stdin); gws=gws if isinstance(gws,list) else gws.get("gateways",gws.get("items",[])); sys.exit(0 if any(g.get("name")=="'"$(OPENSHELL_GATEWAY_NAME)"'" for g in gws) else 1)' \
+	  2>/dev/null || \
 	  openshellctl gateway add \
 	    "$$(vault kv get -mount=$(OPENSHELL_VAULT_KV_MOUNT) -field=$(OPENSHELL_VAULT_FIELD_PREFIX)-gateway-endpoint $(OPENSHELL_VAULT_KV_PATH))" \
 	    --name $(OPENSHELL_GATEWAY_NAME) \
