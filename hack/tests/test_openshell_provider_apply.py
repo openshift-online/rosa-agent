@@ -28,11 +28,11 @@ def _write(path, content, mode=0o600):
     return path
 
 
-def _make_fake_openshellctl(tmp, *, get_exit):
+def _make_fake_openshellctl(tmp, *, get_exit, get_output=""):
     """
     Fake openshellctl that:
       - logs every invocation to tmp/calls.log (one line per call, full argv)
-      - on 'provider get': exits get_exit
+      - on 'provider get': prints get_output to stderr, exits get_exit
       - on 'provider create': records args to tmp/create_args.txt, exits 0
       - on 'provider update': records args to tmp/update_args.txt, exits 0
     """
@@ -41,12 +41,15 @@ def _make_fake_openshellctl(tmp, *, get_exit):
     calls_log = tmp / "calls.log"
     create_args = tmp / "create_args.txt"
     update_args = tmp / "update_args.txt"
+    get_out_file = tmp / "get_output.txt"
+    get_out_file.write_text(get_output, encoding="utf-8")
 
     script = textwrap.dedent(f"""\
         #!/usr/bin/env bash
         printf '%s\\n' "$*" >> {calls_log}
         cmd="$*"
         if [[ "$cmd" == *"provider get"* ]]; then
+            cat {get_out_file} >&2
             exit {get_exit}
         elif [[ "$cmd" == *"provider create"* ]]; then
             printf '%s\\n' "$@" > {create_args}
@@ -74,7 +77,10 @@ class TestCreatePath(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp())
         self.fake_dir, self.calls, self.create_args, _ = _make_fake_openshellctl(
-            self.tmp, get_exit=1
+            self.tmp, get_exit=1,
+            # Script must distinguish "not found" from auth failure; fake emits
+            # the exact openshellctl error text so the grep-based check works.
+            get_output='Error: provider "my-provider" not found',
         )
         self.env = {**os.environ, "PATH": str(self.fake_dir) + ":" + os.environ.get("PATH", "")}
 
@@ -159,6 +165,43 @@ class TestUpdatePath(unittest.TestCase):
         _run("gw", "my-provider", "my-profile", "MY_KEY", env)
         all_calls = self.calls.read_text()
         self.assertNotIn("another-secret", all_calls)
+
+
+class TestProviderGetAuthFailure(unittest.TestCase):
+    """provider get auth error must not be misread as 'provider not found'.
+
+    If openshellctl's own OIDC credential exchange fails (e.g. because an env
+    var with the same name as --credential overrides openshellctl's auth),
+    provider get exits non-zero with an auth error message — not "not found".
+    The script must treat that as a fatal error and NOT proceed to provider
+    create, which would hit the same backoff immediately.
+    """
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        # Simulate auth failure: non-zero exit, error text contains "backoff"
+        # but NOT "not found".
+        self.fake_dir, self.calls, self.create_args, _ = _make_fake_openshellctl(
+            self.tmp, get_exit=1,
+            get_output=(
+                "Error: transport: per-RPC creds failed due to error: "
+                "token exchange failed: token exchange is in backoff after a recent failure"
+            ),
+        )
+        self.env = {**os.environ, "PATH": str(self.fake_dir) + ":" + os.environ.get("PATH", "")}
+
+    def tearDown(self):
+        import shutil; shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_auth_failure_exits_nonzero(self):
+        r = _run("gw", "my-provider", "my-profile", "MY_KEY", self.env)
+        self.assertNotEqual(r.returncode, 0, "script must exit nonzero on auth failure from provider get")
+
+    def test_create_not_called_on_auth_failure(self):
+        _run("gw", "my-provider", "my-profile", "MY_KEY", self.env)
+        calls = self.calls.read_text() if self.calls.exists() else ""
+        self.assertNotIn("provider create", calls,
+                         "provider create must not be called when provider get fails with auth error")
 
 
 class TestInputValidation(unittest.TestCase):

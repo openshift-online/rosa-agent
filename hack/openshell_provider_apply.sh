@@ -35,8 +35,22 @@ case "$CREDENTIAL_KEY" in
     *=*) echo "error: CREDENTIAL_KEY must be a bare variable name (not KEY=VALUE); got: $CREDENTIAL_KEY" >&2; exit 1 ;;
 esac
 
-openshellctl -g "$GATEWAY" provider get "$PROVIDER_NAME" >/dev/null 2>&1 \
-    && PROVIDER_EXISTS=true || PROVIDER_EXISTS=false
+# Distinguish "not found" from auth or transport failures.
+# Swallowing all non-zero exits as "not found" (the old pattern) caused auth
+# errors to be misread as absence — the script then called provider create,
+# which immediately hit the same backoff the get had already triggered.
+GET_EXIT=0
+GET_OUTPUT=$(openshellctl -g "$GATEWAY" provider get "$PROVIDER_NAME" 2>&1) || GET_EXIT=$?
+
+if [[ $GET_EXIT -eq 0 ]]; then
+    PROVIDER_EXISTS=true
+elif echo "$GET_OUTPUT" | grep -qiF "not found"; then
+    PROVIDER_EXISTS=false
+else
+    echo "error: 'openshellctl provider get' failed (exit $GET_EXIT) with unexpected error:" >&2
+    echo "$GET_OUTPUT" >&2
+    exit 1
+fi
 
 if [[ "$PROVIDER_EXISTS" == false ]]; then
     echo "Provider '$PROVIDER_NAME' not found on gateway '$GATEWAY'; creating..."
