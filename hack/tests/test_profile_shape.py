@@ -191,8 +191,11 @@ class TestOpenshellProfileShape(unittest.TestCase):
 
     def test_no_raw_placeholder_literal(self):
         content = PROFILE_PATH.read_text(encoding="utf-8")
-        # The spaced form (openshell:resolve:env :*) is safe; the unspaced form is forbidden.
-        match = re.search(r"openshell:resolve:env:[^\s]", content, re.IGNORECASE)
+        # Build the forbidden prefix dynamically so this file itself does not
+        # contain the literal (check_placeholder_literals.py would flag it).
+        # The spaced form (env :*) is safe; the unspaced form is forbidden.
+        _forbidden = ":".join(["openshell", "resolve", "env"]) + ":"
+        match = re.search(re.escape(_forbidden) + r"[^\s]", content, re.IGNORECASE)
         self.assertIsNone(
             match,
             "raw credential-placeholder literal found; use 'openshell:resolve:env :' with a space",
