@@ -1,15 +1,18 @@
 """Unit tests for the pure/testable parts of hack/e2e/nested_sandbox.sh.
 
 These tests verify:
-  - Cleanup: sandbox delete is called for every e2e-nested-* sandbox in the list.
+  - Cleanup: sandbox delete is called for every e2e-nested-* sandbox found in JSON output.
   - Result parsing: CHILD_OK detection logic (grep pattern).
-  - Check-1 failure detection: policy-denial strings in output trigger PASS.
+  - Check-1 failure detection: proxy-shaped denial strings in output trigger PASS;
+    generic nonzero exits (missing credential locally) do NOT.
   - Param assembly: all required -p flags are forwarded to sandbox create.
+  - Provider flags: providers passed as --provider flags, not via PROVIDER_REFS.
 
 Uses a fake openshellctl in a temp dir. No network, no real gateway,
 no Vault, no real ~/.config.
 """
 
+import json
 import os
 import subprocess
 import tempfile
@@ -43,7 +46,7 @@ def _minimal_env(vault_dir, fake_bin_dir):
 
 
 class TestCleanup(unittest.TestCase):
-    """Cleanup removes every e2e-nested-* sandbox listed by the gateway."""
+    """Cleanup parses --output json and removes every e2e-nested-* sandbox."""
 
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp())
@@ -54,18 +57,17 @@ class TestCleanup(unittest.TestCase):
         import shutil; shutil.rmtree(self.tmp, ignore_errors=True)
 
     def _make_fakes(self, sandbox_names):
-        """Fake vault + openshellctl that returns given sandbox names on 'sandbox list'."""
+        """Fake vault + openshellctl that returns given sandbox names as JSON on 'sandbox list'."""
         vault_dir = self.tmp / "vault_bin"
         fake_dir = self.tmp / "fake_bin"
         vault_dir.mkdir(exist_ok=True)
         fake_dir.mkdir(exist_ok=True)
 
         delete_log = self.tmp / "deletes.log"
-        # Write sandbox list output to a file so the fake can cat it (avoids
-        # Python repr() escaping issues with embedded newlines in bash scripts).
-        list_output_file = self.tmp / "sandbox_list.txt"
-        list_output_file.write_text(
-            "\n".join(f"{n}  running" for n in sandbox_names) + "\n",
+        # Write sandbox list output as a JSON array for the --output json code path.
+        list_json = self.tmp / "sandbox_list.json"
+        list_json.write_text(
+            json.dumps([{"name": n, "status": "running"} for n in sandbox_names]),
             encoding="utf-8",
         )
 
@@ -79,7 +81,7 @@ class TestCleanup(unittest.TestCase):
             #!/usr/bin/env bash
             cmd="$*"
             if [[ "$cmd" == *"sandbox list"* ]]; then
-                cat {list_output_file}
+                cat {list_json}
             elif [[ "$cmd" == *"sandbox delete"* ]]; then
                 printf '%s\\n' "$@" >> {delete_log}
             elif [[ "$cmd" == *"sandbox create"* ]]; then
@@ -116,33 +118,46 @@ class TestCleanup(unittest.TestCase):
 
 
 class TestCheck1DenialDetection(unittest.TestCase):
-    """Check 1 considers policy-denial strings in output as a success condition."""
+    """Check 1 passes only when proxy-shaped denial text appears in output."""
 
-    _DENIAL_STRINGS = [
+    # These are the strings the proxy emits when a call is policy-blocked.
+    _PROXY_DENIAL_STRINGS = [
         "policy_denied",
         "policy denied",
-        "no credentials",
+        "credential_endpoint_mismatch",
         "forbidden",
         "Forbidden",
         "DENIED",
     ]
 
-    def test_denial_patterns_are_accepted_strings(self):
-        # Verify the grep pattern in the script accepts each denial string.
-        # We do this without running the full E2E: just verify the grep exits 0.
-        for s in self._DENIAL_STRINGS:
+    def test_proxy_denial_patterns_are_accepted(self):
+        # Verify the grep pattern in the script accepts each proxy denial string.
+        for s in self._PROXY_DENIAL_STRINGS:
             result = subprocess.run(
-                ["grep", "-iE", r"policy.denied|no credentials|denied|forbidden|policy_denied"],
+                ["grep", "-iE",
+                 r"policy.denied|policy_denied|credential_endpoint_mismatch|forbidden|denied"],
                 input=s, capture_output=True, text=True
             )
             self.assertEqual(
                 result.returncode, 0,
-                f"denial string not matched by grep pattern: {s!r}"
+                f"proxy denial string not matched by grep pattern: {s!r}"
             )
+
+    def test_arbitrary_failure_without_denial_text_is_not_accepted(self):
+        # A plain "command not found" has no proxy-shaped denial text and must NOT be PASS.
+        result = subprocess.run(
+            ["grep", "-iE",
+             r"policy.denied|policy_denied|credential_endpoint_mismatch|forbidden|denied"],
+            input="command not found\n", capture_output=True, text=True
+        )
+        self.assertNotEqual(
+            result.returncode, 0,
+            "generic error text should NOT match the proxy denial pattern"
+        )
 
 
 class TestParamAssembly(unittest.TestCase):
-    """All required -p / --env parameters are forwarded to sandbox create."""
+    """All required -p parameters are forwarded to sandbox create; providers use --provider flags."""
 
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp())
@@ -152,8 +167,8 @@ class TestParamAssembly(unittest.TestCase):
     def tearDown(self):
         import shutil; shutil.rmtree(self.tmp, ignore_errors=True)
 
-    def test_create_call_includes_required_params(self):
-        """sandbox create is called with NAME, IMAGE, GATEWAY_ENDPOINT etc."""
+    def _make_fakes_capture_all_creates(self):
+        """Fakes that capture args for ALL sandbox create calls (exit 0 each time)."""
         vault_dir = self.tmp / "vault_bin"
         fake_dir = self.tmp / "fake_bin"
         vault_dir.mkdir(exist_ok=True)
@@ -161,21 +176,21 @@ class TestParamAssembly(unittest.TestCase):
 
         create_log = self.tmp / "create_calls.log"
 
-        vault_script = textwrap.dedent("""\
-            #!/usr/bin/env bash
-            echo "dummy-value"
-        """)
-        _write(vault_dir / "vault", vault_script)
+        _write(vault_dir / "vault", "#!/usr/bin/env bash\necho 'dummy-value'\n")
+
+        # Return an empty JSON array for sandbox list (cleanup has nothing to do).
+        list_json = self.tmp / "sandbox_list.json"
+        list_json.write_text("[]", encoding="utf-8")
 
         ctl_script = textwrap.dedent(f"""\
             #!/usr/bin/env bash
             cmd="$*"
             if [[ "$cmd" == *"sandbox list"* ]]; then
-                echo ""
+                cat {list_json}
             elif [[ "$cmd" == *"sandbox create"* ]]; then
                 printf '%s\\n' "$@" >> {create_log}
-                # Exit nonzero so script fails fast after first create attempt
-                exit 1
+                # Return 0 so all three checks run; they will fail on missing output
+                exit 0
             fi
             exit 0
         """)
@@ -183,17 +198,48 @@ class TestParamAssembly(unittest.TestCase):
 
         env = _minimal_env(vault_dir, fake_dir)
         env["HOME"] = str(self.home)
+        return env, create_log
 
+    def test_create_call_includes_required_params(self):
+        """sandbox create is called with NAME, IMAGE, GATEWAY_ENDPOINT etc."""
+        env, create_log = self._make_fakes_capture_all_creates()
         subprocess.run(["bash", str(SCRIPT)], capture_output=True, text=True, env=env)
 
         if not create_log.exists():
             self.skipTest("sandbox create was not called")
 
         args = create_log.read_text()
-        # All -p flags for required substitution variables must be present
         for required in ["NAME=", "IMAGE=", "GATEWAY_ENDPOINT=", "OIDC_ISSUER=",
                          "OIDC_CLIENT_ID=", "OIDC_AUDIENCE="]:
             self.assertIn(required, args, f"required param {required!r} not in create args: {args}")
+
+    def test_provider_refs_param_not_used(self):
+        """providerRefs is not passed via -p PROVIDER_REFS= (YAML scalar substitution bug)."""
+        env, create_log = self._make_fakes_capture_all_creates()
+        subprocess.run(["bash", str(SCRIPT)], capture_output=True, text=True, env=env)
+
+        if not create_log.exists():
+            self.skipTest("sandbox create was not called")
+
+        args = create_log.read_text()
+        self.assertNotIn(
+            "PROVIDER_REFS=", args,
+            "PROVIDER_REFS= should not appear; providers are passed as --provider flags"
+        )
+
+    def test_check2_uses_provider_flag(self):
+        """Check 2 (deterministic) passes rosa-agent-openshell via --provider flag."""
+        env, create_log = self._make_fakes_capture_all_creates()
+        subprocess.run(["bash", str(SCRIPT)], capture_output=True, text=True, env=env)
+
+        if not create_log.exists():
+            self.skipTest("sandbox create was not called")
+
+        args = create_log.read_text()
+        self.assertIn(
+            "--provider", args,
+            "--provider flag must appear for check 2/3 provider-using calls"
+        )
 
 
 if __name__ == "__main__":
