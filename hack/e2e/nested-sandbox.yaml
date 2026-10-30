@@ -12,6 +12,7 @@ spec:
     OPENSHELL_OIDC_ISSUER: ${OIDC_ISSUER}
     OPENSHELL_OIDC_CLIENT_ID: ${OIDC_CLIENT_ID}
     OPENSHELL_OIDC_AUDIENCE: ${OIDC_AUDIENCE}
+    NAME: ${NAME}
     HOME: /tmp
   sessionOpts:
     approvalMode: auto

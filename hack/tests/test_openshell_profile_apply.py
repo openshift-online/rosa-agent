@@ -149,14 +149,12 @@ class TestUpdatePath(unittest.TestCase):
         # update_args has one argv word per line; --file <path> must be present
         args = self.update_args.read_text()
         self.assertIn("--file", args, f"--file not in update args: {args}")
-        # The resource_version value (42) from the export must be in the args
-        # (it's in the temp file path name? no — the file content has rv:42).
-        # The script outputs "resource_version: 42" in the temp file; the
-        # update call's --file points at that temp file. We verify the temp
-        # file content by reading all lines and locating the --file path.
         lines = [l.rstrip() for l in args.splitlines()]
         file_idx = next((i for i, l in enumerate(lines) if l == "--file"), -1)
         self.assertGreater(file_idx, -1, f"--file not found in update args lines: {lines}")
+        # The profile id (from export) must also appear, confirming the right
+        # profile is being updated.
+        self.assertIn("test-profile", args, f"profile id not in update args: {args}")
 
     def test_resource_version_spliced_into_file(self):
         """The --file temp file passed to 'profile update' contains resource_version."""

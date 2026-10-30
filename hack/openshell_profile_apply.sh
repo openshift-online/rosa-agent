@@ -52,9 +52,10 @@ else
         exit 1
     }
 
+    TMP_FILE=""
+    trap 'rm -f "$TMP_FILE"' EXIT
     TMP_FILE=$(mktemp)
     chmod 600 "$TMP_FILE"
-    trap 'rm -f "$TMP_FILE"' EXIT
 
     cp "$PROFILE_YAML" "$TMP_FILE"
     printf 'resource_version: %s\n' "$RESOURCE_VERSION" >> "$TMP_FILE"
