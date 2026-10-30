@@ -23,7 +23,7 @@
 #   provider can do anything the SA can (including creating further sandboxes
 #   with no count or recursion limit). The credential is provider-gated and
 #   child sandboxes inherit the baked policy. A lower-privilege SA is tracked
-#   as a follow-up (see AGENTS.md out-of-scope).
+#   as a follow-up.
 #
 # Import and provision (Vault-sourced, idempotent):
 #   make openshell-provider

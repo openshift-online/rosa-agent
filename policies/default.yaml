@@ -193,8 +193,9 @@ network_policies:
   # only on the token-mint POST. The gateway host
   # (gw-openshell-*.hyp2-spoke1.infra.hypershell.app) is L4 and carries no
   # credential — authorization is enforced server-side by the SA role. A coarse
-  # block here would permit the client-secret to reach any host. Attach the
-  # openshell provider to grant this access; do not add it here.
+  # block here would union over the Keycloak endpoint rules and allow
+  # OPENSHELL_OIDC_CLIENT_SECRET to be request-body-rewritten against any host.
+  # Attach the openshell provider to grant this access; do not add it here.
   gitlab_cee:
     name: gitlab-cee
     endpoints:

@@ -99,11 +99,9 @@ Note: OpenShell gateway / Keycloak egress is intentionally **not** in this baked
 `openshell` provider profile (`provider-profiles/openshell.yaml`) composes its own Keycloak
 endpoints (`keycloak.*.infra.hypershell.app`) with `request_body_credential_rewrite: true` and
 `enforcement: enforce`. A coarse block here would union over those rules and permit
-`OPENSHELL_OIDC_CLIENT_SECRET` egress to any host. The gateway host (`gw-openshell-*.infra.hypershell.app`)
-is L4 and carries no credentials. Attach the openshell provider to grant this access; do not add
-it here.
-Note that `gw-openshell-*` is shorthand; the actual gateway route host includes the spoke suffix,
-e.g. `gw-openshell-*.hyp2-spoke1.infra.hypershell.app`.
+`OPENSHELL_OIDC_CLIENT_SECRET` egress to any host. The gateway host
+(`gw-openshell-*.hyp2-spoke1.infra.hypershell.app`) is L4 and carries no credentials.
+Attach the openshell provider to grant this access; do not add it here.
 
 ### Provider Profiles
 
@@ -332,6 +330,10 @@ The `openshell` provider profile (`provider-profiles/openshell.yaml`) lets a san
 its own gateway token via OIDC `client_credentials` and act as an `openshellctl` client of its own
 gateway — e.g. to create child sandboxes from inside a running sandbox.
 
+**Instance scope:** the current profile targets the hyp2 gateway only. Extending to hyp0/hyp1
+requires adding their Keycloak and gateway endpoint entries to the profile and reprovisioning;
+that is tracked as a follow-up.
+
 ### What the profile grants
 
 * **OIDC token mint** — `OPENSHELL_OIDC_CLIENT_SECRET` is bound to exactly two paths on the
@@ -383,7 +385,7 @@ Rollback:
 
 ```bash
 openshellctl provider delete rosa-agent-openshell
-openshell -g rosa-agent profile delete openshell --global
+openshell -g rosa-agent profile delete openshell --global  # verify verb: openshell profile --help
 ```
 
 ### E2E test (human-run only)
