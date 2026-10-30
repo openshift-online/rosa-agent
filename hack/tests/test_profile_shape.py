@@ -192,6 +192,19 @@ class TestOpenshellProfileShape(unittest.TestCase):
                     f"gateway host {ep['host']} must not have 'rules' (L4 endpoint)",
                 )
 
+    def test_gateway_allow_uninspected_credentials(self):
+        # The linter requires this field when the sandbox holds a declared
+        # credential and the endpoint is L4. It is an explicit acknowledgement
+        # that the credential does NOT travel to this host, not a security
+        # relaxation. Without it, `openshell profile lint` fails.
+        for ep in self.endpoints:
+            if _is_gateway(ep):
+                self.assertTrue(
+                    ep.get("allow_uninspected_credentials"),
+                    f"gateway host {ep['host']} must have allow_uninspected_credentials: true "
+                    f"(linter requires explicit opt-in for L4 endpoints in credentialed profiles)",
+                )
+
     def test_gateway_port_443(self):
         for ep in self.endpoints:
             if _is_gateway(ep):

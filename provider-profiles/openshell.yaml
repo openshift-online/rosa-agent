@@ -87,8 +87,14 @@ endpoints:
 # every call. L4 tunnels TLS end-to-end to the gateway; authorization is
 # entirely the SA's gateway role. No credential rewrite is needed here — the
 # sandbox presents the JWT it minted from Keycloak, not a placeholder.
+# allow_uninspected_credentials: the linter requires this explicit opt-in when
+# the sandbox holds any declared credential and the endpoint is L4 (no L7
+# inspection possible). The OIDC client secret does NOT travel to this host;
+# the sandbox uses the JWT it minted from Keycloak. This field acknowledges
+# that fact rather than relaxing any security control.
 - host: gw-openshell-02c8f9e0680fb903.hyp2-spoke1.infra.hypershell.app
   port: 443
+  allow_uninspected_credentials: true
 binaries:
 - /usr/local/bin/openshellctl
 inference_capable: false
