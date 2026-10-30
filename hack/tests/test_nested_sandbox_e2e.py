@@ -117,43 +117,63 @@ class TestCleanup(unittest.TestCase):
         self.assertFalse(delete_log.exists(), "delete called when no e2e-nested-* sandboxes exist")
 
 
-class TestCheck1DenialDetection(unittest.TestCase):
-    """Check 1 passes only when proxy-shaped denial text appears in output."""
+class TestCheck1MarkerLogic(unittest.TestCase):
+    """Check 1 passes only when structured markers confirm egress was denied.
 
-    # These are the strings the proxy emits when a call is policy-blocked.
-    _PROXY_DENIAL_STRINGS = [
-        "policy_denied",
-        "policy denied",
-        "credential_endpoint_mismatch",
-        "forbidden",
-        "Forbidden",
-        "DENIED",
-    ]
+    The Go SDK wraps transport failures in oidc.discovery or ErrClientCredentials
+    and does not surface the proxy's L7 policy_denied JSON — that only appears for
+    L7-inspected hosts. The gateway endpoint is L4, so the inner error is a
+    connect/EOF, not policy_denied. Checking for specific marker strings that the
+    SCRIPT1 itself emits makes the test independent of SDK error-message wording.
+    """
 
-    def test_proxy_denial_patterns_are_accepted(self):
-        # Verify the grep pattern in the script accepts each proxy denial string.
-        for s in self._PROXY_DENIAL_STRINGS:
-            result = subprocess.run(
-                ["grep", "-iE",
-                 r"policy.denied|policy_denied|credential_endpoint_mismatch|forbidden|denied"],
-                input=s, capture_output=True, text=True
-            )
-            self.assertEqual(
-                result.returncode, 0,
-                f"proxy denial string not matched by grep pattern: {s!r}"
-            )
+    _PASS_CONDITION = textwrap.dedent("""\
+        sandbox_up=$(printf '%s' "$OUTPUT" | grep -c "SANDBOX_UP" || true)
+        gw_add_rc=$(printf '%s' "$OUTPUT" | grep "GATEWAY_ADD_RC=" | grep -oE "[0-9]+$" | head -1 || true)
+        whoami_ok=$(printf '%s' "$OUTPUT" | grep -c "WHOAMI_OK" || true)
+        whoami_failed=$(printf '%s' "$OUTPUT" | grep -c "WHOAMI_FAILED" || true)
+        [[ "$sandbox_up" -gt 0 && "${gw_add_rc:-0}" -ne 0 && "$whoami_ok" -eq 0 && "$whoami_failed" -gt 0 ]]
+    """)
 
-    def test_arbitrary_failure_without_denial_text_is_not_accepted(self):
-        # A plain "command not found" has no proxy-shaped denial text and must NOT be PASS.
-        result = subprocess.run(
-            ["grep", "-iE",
-             r"policy.denied|policy_denied|credential_endpoint_mismatch|forbidden|denied"],
-            input="command not found\n", capture_output=True, text=True
+    def _is_pass(self, output):
+        """Return True if the bash marker-check condition is satisfied for the given output."""
+        r = subprocess.run(
+            ["bash", "-c", self._PASS_CONDITION],
+            env={**os.environ, "OUTPUT": output},
+            capture_output=True,
         )
-        self.assertNotEqual(
-            result.returncode, 0,
-            "generic error text should NOT match the proxy denial pattern"
-        )
+        return r.returncode == 0
+
+    def test_correct_markers_are_pass(self):
+        """SANDBOX_UP + GATEWAY_ADD_RC≠0 + WHOAMI_FAILED → PASS."""
+        self.assertTrue(self._is_pass(
+            "SANDBOX_UP\noidc: discovery failed: connect: connection refused\n"
+            "GATEWAY_ADD_RC=1\nWHOAMI_FAILED\n"
+        ))
+
+    def test_gateway_add_success_is_fail(self):
+        """GATEWAY_ADD_RC=0 (egress not blocked) → FAIL; provider must gate access."""
+        self.assertFalse(self._is_pass(
+            "SANDBOX_UP\nGATEWAY_ADD_RC=0\nWHOAMI_OK\n"
+        ))
+
+    def test_missing_sandbox_up_is_fail(self):
+        """No SANDBOX_UP → FAIL; sandbox did not run the script at all."""
+        self.assertFalse(self._is_pass(
+            "GATEWAY_ADD_RC=1\nWHOAMI_FAILED\n"
+        ))
+
+    def test_whoami_ok_present_is_fail(self):
+        """WHOAMI_OK in output → FAIL; token was obtained without the openshell provider."""
+        self.assertFalse(self._is_pass(
+            "SANDBOX_UP\nGATEWAY_ADD_RC=1\nWHOAMI_OK\n"
+        ))
+
+    def test_generic_crash_without_markers_is_fail(self):
+        """Sandbox crash with no markers → FAIL; don't accept unknown failures as PASS."""
+        self.assertFalse(self._is_pass(
+            "bash: openshellctl: command not found\n"
+        ))
 
 
 class TestParamAssembly(unittest.TestCase):
