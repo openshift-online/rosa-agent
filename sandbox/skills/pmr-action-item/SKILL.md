@@ -1,6 +1,6 @@
 ---
 name: pmr-action-item
-description: Investigate and resolve a PMR (Post-Mortem Review) action-item Jira ticket (labels pmr-ai and pmr-ai-ready) assigned to the rosa-agent user - read the ticket, fork the repo it concerns, implement the described work on a feature branch, run security review, then critical code review with a different model, implement review findings, re-run security check, and open a PR. Built for per-ticket invocation (one issue key per run); a future job/cron could enumerate pmr-ai-ready tickets and invoke this once per key, the way job-image-vuln-check fans out over targets. Use when asked to investigate, work, or action a PMR ticket/action item, or when given a Jira issue key labeled pmr-ai-ready. Trigger keywords - PMR, PMR action item, pmr-ai-ready, post-mortem action item, investigate ticket, action item ticket.
+description: Investigate and resolve a PMR (Post-Mortem Review) action-item Jira ticket (labels pmr-ai and pmr-ai-ready) assigned to the rosa-agent user - read the ticket, fork the repo it concerns, implement the described work on a feature branch, run security review, then critical code review with a different model, implement review findings, re-run security check, and open a PR. Built for per-ticket invocation (one issue key per run); a future job/cron could enumerate pmr-ai-ready tickets and invoke this once per key, the way job-image-vuln-check fans out over targets. Use when asked to investigate, work, or action a PMR ticket/action item, or when given a Jira issue key labeled pmr-ai or pmr-ai-ready. Trigger keywords - PMR, PMR-AI, PMR action item, pmr-ai, pmr-ai-ready, post-mortem action item, investigate ticket, action item ticket.
 ---
 
 # PMR action item: investigate a ticket, fix it, PR it
@@ -279,6 +279,13 @@ Spawn a subagent with **`model="fable"`** (or `model="opus"` if Fable is
 unavailable, `model="haiku"` as a last fallback) to review code quality,
 correctness, and best practices.
 
+**Model availability note:** Only `claude-sonnet-4-6` is verified enabled in
+the Vertex project. If you fall back to a non-preferred model, log it loudly:
+post a comment to the ticket stating which model was used and that enablement
+of the preferred model should be verified. Do **not** silently downgrade — a
+fallback to `haiku` for both 7a and 7b collapses the "independent model"
+guarantee.
+
 Give the reviewing agent:
 
 - The full diff (`git diff main...HEAD` or equivalent)
@@ -305,12 +312,19 @@ if Opus is unavailable) to verify the implementation matches the approved
 remediation proposal. This reviewer is scoped entirely to proposal adherence —
 it does not re-do the quality review above.
 
+**Fetch the proposal first.** Before spawning the subagent, search the Jira
+ticket's comment history for the proposal comment posted by `pmr-remediation-analysis`
+(it contains the full structured proposal with Failure Mechanism, Proposed Change,
+Rationale, Verification Approach, and Provenance sections). If no such comment
+exists, **do not proceed with 7b** — treat this as a step 10 blocker: comment on
+the ticket that the proposal comment is missing and implementation cannot be
+reviewed for adherence until it is posted, then stop.
+
 Give the reviewing agent:
 
-- The approved remediation proposal — read from the Jira ticket's comments
-  (posted by the `pmr-remediation-analysis` skill before the `pmr-ai-ready` tag
-  was applied) or from the ticket description
+- The approved remediation proposal (the full text retrieved from Jira comments above)
 - The full diff (`git diff main...HEAD` or equivalent)
+- The target repository's conventions (language, style, patterns observed in the codebase)
 
 Ask it to assess:
 
@@ -339,9 +353,18 @@ The reviewer must return structured findings with:
 
 Collect all findings from both reviewers before acting. Then:
 
-- **CRITICAL findings** (from either reviewer) → proceed to step 8 to implement.
-  If you cannot safely implement a CRITICAL finding, treat it as a blocker
-  (step 10).
+- **CRITICAL findings from 7a** → proceed to step 8 to implement (code fix).
+  If you cannot safely implement, treat it as a step 10 blocker.
+- **CRITICAL findings from 7b (adherence)** — two explicit cases:
+  - The *implementation* can be changed to match the proposal (e.g. missing a
+    test the proposal specified, or a scope-creep file) → proceed to step 8 to
+    fix the implementation.
+  - The *proposal itself appears wrong* (the approved approach is unsound,
+    contradicts the codebase, or is impossible to implement correctly) →
+    **do not try to fix the code**. This is a step 10 blocker: comment on the
+    ticket with the exact discrepancy (quote the proposal section, explain why
+    it is wrong), and stop. A human must update the proposal before this ticket
+    can be retried.
 - **IMPORTANT findings** should be implemented if straightforward.
 - **MINOR findings** can be noted but don't block.
 

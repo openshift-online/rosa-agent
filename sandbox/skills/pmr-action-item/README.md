@@ -9,7 +9,7 @@ Two-tier job pattern:
 ### 1. Enumerator (CronJob)
 
 **Runs**: Daily at 04:00 UTC  
-**File**: `job-pmr-action-item-enumerator-cron.yaml`  
+**File**: `job-pmr-action-item-enumerator-cron.yaml` (not yet in the repo — see SKILL.md for the enumerator contract)  
 **ServiceAccount**: `rosa-agent-bot-3`
 
 The enumerator:

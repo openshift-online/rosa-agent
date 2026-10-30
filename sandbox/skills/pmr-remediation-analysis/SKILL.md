@@ -608,14 +608,28 @@ jira -H "Content-Type: application/json" \
 - Brief was incomplete (stopped at Step 1)
 - Analysis identified blockers requiring human input
 
-**Comment on the ticket with proposal link:**
-After tagging, add a comment with a link to where the proposal was saved (Google Doc, Jira comment, file attachment, etc.):
+**Post the full proposal as an ADF comment:**
+After tagging, post the **complete structured proposal** as a Jira comment using
+ADF format. This is required — the `pmr-action-item` skill's step 7b reads the
+proposal from this comment to verify implementation adherence. A placeholder link
+is not sufficient; the full text must be in the comment so it is retrievable via
+the Jira API without any attachment or external document access.
+
+The comment body (ADF) must contain the complete proposal text: Failure Mechanism,
+Proposed Change (TYPE/WHAT/WHERE/HOW), Rationale, Verification Approach, and
+Provenance sections. Include a preamble line:
 
 ```
-Proposal analysis complete. See attached proposal document.
+PMR Remediation Analysis: Proposal complete — pmr-ai-ready tagged.
+
+[full proposal text follows]
 
 Next: Human grooming gate for approval before implementation.
 ```
+
+Use the `jira` skill's comment endpoint (`POST .../comment`) with ADF `doc`
+content, not plain text — the skill's comment body must be searchable as structured
+content for downstream readers.
 
 ## Decline Path: Cannot Propose Sound Remediation
 
