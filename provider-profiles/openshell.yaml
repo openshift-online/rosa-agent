@@ -10,8 +10,8 @@
 #   supervisor's L7 relay negotiates only ALPN http/1.1 and grpc-go requires
 #   ALPN h2 — an L7 block here breaks every gRPC call openshellctl makes.
 #   Authorization at the gateway is enforced server-side by the service
-#   account's role (openshell-admin). See B2 in the ticket for the full
-#   rationale; do not add protocol/access/rules to the gateway block.
+#   account's role (openshell-admin). Do not add protocol/access/rules to
+#   the gateway block.
 #
 #   Non-secret runtime values are passed at sandbox create as plain env vars
 #   (same pattern as JIRA_EMAIL/JIRA_BASE_URL):

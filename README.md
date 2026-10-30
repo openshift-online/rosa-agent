@@ -102,6 +102,8 @@ endpoints (`keycloak.*.infra.hypershell.app`) with `request_body_credential_rewr
 `OPENSHELL_OIDC_CLIENT_SECRET` egress to any host. The gateway host (`gw-openshell-*.infra.hypershell.app`)
 is L4 and carries no credentials. Attach the openshell provider to grant this access; do not add
 it here.
+Note that `gw-openshell-*` is shorthand; the actual gateway route host includes the spoke suffix,
+e.g. `gw-openshell-*.hyp2-spoke1.infra.hypershell.app`.
 
 ### Provider Profiles
 
