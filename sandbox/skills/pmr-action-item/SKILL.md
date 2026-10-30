@@ -58,6 +58,11 @@ is a usage error, not a blocker to negotiate with the ticket - there's no
 ticket yet to comment on. Stop and report it via `file_failure_issue` (see
 the Failures section below): a human reads that later, not a live prompt.
 
+**Validate the key format** before using it anywhere. It must match
+`^[A-Z][A-Z0-9]+-[0-9]+$` (e.g. `ROSAENG-62312`, `MCS-207`). If it doesn't,
+this is a usage error — stop and `file_failure_issue`. Never interpolate an
+unvalidated key into shell commands or Jira API paths.
+
 ## 2. Read the ticket
 
 Per `AGENTS.md`, any Jira call MUST go through the `jira` skill - load it now
@@ -79,73 +84,18 @@ and run its auth-detection block once. Then:
   there - note it in the final output and do not touch their ticket; don't
   `file_failure_issue` for this, it isn't a failure.
 
-## 2a. Check for an existing open PR or branch (deduplication)
-
-Before doing any implementation work, verify no prior run is already handling
-this ticket. A cron invoker can start two runs on the same ticket if the first
-run is slow; this check prevents opening a second PR.
-
-**Check for an open PR** from the `rosa-agent` fork targeting this issue key:
-
-```shell
-EXISTING_PR=$(gh api "repos/openshift-online/rosa-agent/pulls?state=open&per_page=100" --paginate   | python3 -I -c "
-import json, sys
-key = '${ISSUE_KEY}'
-for pr in json.load(sys.stdin):
-    repo = pr['head'].get('repo') or {}
-    if repo.get('owner', {}).get('login', '').lower() == 'rosa-agent':
-        if pr['head']['ref'] == f'pmr-action-item/{key}':
-            print(pr['number'], pr['html_url'])
-            break
-")
-```
-
-**Check for an existing branch** on the fork (a run may have pushed but not yet
-opened a PR, or may be in-flight right now):
-
-```shell
-BRANCH_STATUS=$(gh api   "repos/rosa-agent/rosa-agent/branches/pmr-action-item/${ISSUE_KEY}"   -i 2>&1 | head -1 | grep -o '[0-9]\{3\}')
-# 200 = branch exists; 404 = clear
-```
-
-**Also check for a merged PR** (ticket already completed):
-
-```shell
-MERGED_PR=$(gh api "repos/openshift-online/rosa-agent/pulls?state=closed&per_page=100" --paginate   | python3 -I -c "
-import json, sys
-key = '${ISSUE_KEY}'
-for pr in json.load(sys.stdin):
-    repo = pr['head'].get('repo') or {}
-    if repo.get('owner', {}).get('login', '').lower() == 'rosa-agent':
-        if pr['head']['ref'] == f'pmr-action-item/{key}':
-            print(pr['number'], pr.get('merged_at') or 'closed-unmerged')
-            break
-")
-```
-
-**Decision logic:**
-- Open PR found → stop; log the existing PR URL. Not a failure; do not call
-  `file_failure_issue`. The PR is already in review.
-- Branch exists (no open PR) → another run is in-flight. Stop and log. Not a
-  failure.
-- Merged PR found → ticket is done. Stop and log.
-- Closed-unmerged PR found → prior run was abandoned. The branch is someone
-  else's cleanup to handle; proceed from scratch on a fresh branch (the name
-  `pmr-action-item/<ISSUE-KEY>` will conflict — comment on the ticket as a
-  blocker, step 10, noting the abandoned branch).
-- Nothing found → clear to proceed.
-
 ## 2b. Transition ticket to In Progress
 
-Immediately after step 2a confirms no existing work, transition the Jira ticket
-to **In Progress**. This is the distributed lock: a second cron run that picks
-up the same ticket from the "To Do" queue will find it already In Progress and
-skip it (because the enumerator filters by `statusCategory = "To Do"`).
+Immediately transition the Jira ticket to **In Progress**. This is the
+distributed lock: a second cron run that picks up the same ticket from the "To
+Do" queue will find it already In Progress and skip it (because the enumerator
+filters by `statusCategory = "To Do"`).
 
 **Get the available transitions:**
 
 ```shell
-jira -H "Accept: application/json"   "$JB/rest/api/3/issue/<ISSUE-KEY>/transitions"
+jira -H "Accept: application/json" \
+  "$JB/rest/api/3/issue/<ISSUE-KEY>/transitions"
 ```
 
 Find the transition whose `name` is `"In Progress"` (or the nearest equivalent
@@ -155,13 +105,24 @@ Extract its numeric `id`.
 **Apply the transition:**
 
 ```shell
-jira -H "Content-Type: application/json"   -X POST "$JB/rest/api/3/issue/<ISSUE-KEY>/transitions"   -d '{"transition":{"id":"<id from above>"}}'
+jira -H "Content-Type: application/json" \
+  -X POST "$JB/rest/api/3/issue/<ISSUE-KEY>/transitions" \
+  -d '{"transition":{"id":"<id from above>"}}'
 ```
 
 **If the transition returns a non-2xx response:** another run beat this one to
-the transition — the ticket is no longer in "To Do". Stop immediately; log the
-HTTP status and stop. Do not call `file_failure_issue` — this is the race-condition
+the transition — the ticket is no longer in "To Do". Stop immediately and log
+the HTTP status. Do not call `file_failure_issue` — this is the race-condition
 guard working as designed, not a failure.
+
+**Race condition note:** This lock is reliable only if the Jira workflow defines
+"In Progress" as a status-specific transition (i.e. only reachable from "To Do").
+If "In Progress" is a global transition (reachable from any status), a second
+run's POST will succeed even after the first run already transitioned — both will
+proceed. To verify: after the transition, re-read the issue changelog
+(`GET .../issue/<KEY>?expand=changelog`) and confirm the most recent status-change
+event has a `created` timestamp within the last few seconds. If not, another run
+beat you; stop.
 
 **After a successful transition,** continue to step 3. All remaining steps should
 complete for this run — the ticket is now locked to this run via its In Progress
@@ -174,6 +135,46 @@ URL in the description/comments, the Jira project/component naming
 conventions, or linked issues. If you genuinely cannot determine which repo
 the ticket concerns, that's a blocker - go to step 7 (comment on the ticket
 asking for the repo) rather than guessing one.
+
+From this point on, `$UPSTREAM` is the owner/repo identified above (e.g.
+`openshift-online/some-repo`) and `$FORK` is `rosa-agent/<repo-name>`.
+
+## 3a. Check for an existing PR or branch (deduplication)
+
+Now that you know `$UPSTREAM` and `$FORK`, check whether a prior run already
+handled this ticket. This step runs after step 3 (not before) because PMR PRs
+are opened from the fork against the upstream repo for the ticket's own target —
+not against `openshift-online/rosa-agent`.
+
+**Single API call covers all states** — open, merged, and closed-unmerged:
+
+```shell
+BRANCH="pmr-action-item/${ISSUE_KEY}"
+PR_RESULT=$(gh api \
+  "repos/${UPSTREAM}/pulls?head=rosa-agent:${BRANCH}&state=all" \
+  --jq '.[0] | {number, html_url, state, merged_at}')
+```
+
+**Check for an existing branch** on the fork:
+
+```shell
+gh api "repos/${FORK}/branches/${BRANCH}" --jq '.name' >/dev/null 2>&1
+BRANCH_EXISTS=$?  # 0 = branch exists; non-zero = 404 / not found
+```
+
+**Decision logic:**
+- PR found, `state=open` → stop; log the existing PR URL. Not a failure; do
+  not call `file_failure_issue`. The PR is already in review.
+- PR found, `merged_at` is not null → ticket is done. Stop and log.
+- PR found, `state=closed` and `merged_at` is null → prior run was abandoned;
+  this is a step 10 blocker. Comment on the ticket noting the closed-unmerged
+  PR (include URL) and that a human must clean up the branch and PR before this
+  ticket can be retried. Stop.
+- No PR, but `$BRANCH_EXISTS=0` (branch exists on fork) → another run may be
+  in-flight or crashed mid-push. This is a step 10 blocker: comment on the
+  ticket noting the orphaned branch, and stop. Do not silently discard — nobody
+  reads cron stdout.
+- No PR, no branch → clear to proceed.
 
 ## 4. Fork and sync, then branch
 
@@ -335,13 +336,30 @@ and so are these, non-access blockers that equally stop forward progress:
 - failing tests you can't get green;
 - anything else that stops you from completing the ticket.
 
-**Do not retry around it, guess past it, or silently stop.** Instead, add a
-comment to the ticket (via the `jira` skill) stating plainly what you were
-doing and the exact cause of the issue - the literal error, HTTP status, and
-endpoint/host where relevant - so the engineers watching the ticket can
-triage it and figure out what to unblock, and the work can resume on a later
-run. This is a normal, expected outcome of hitting the edge of what this
-sandbox can reach - not a failure to hide or apologize for.
+**Do not retry around it, guess past it, or silently stop.** Instead:
+
+1. **Comment on the ticket** (via the `jira` skill) stating plainly what you were
+   doing and the exact cause of the issue — the literal error, HTTP status, and
+   endpoint/host where relevant — so engineers can triage and unblock.
+2. **Transition the ticket back to "To Do"** (or a "Blocked" status if the
+   workflow has one). The ticket is currently In Progress (locked by step 2b);
+   leaving it In Progress with no PR and no comment means it will never be
+   retried by the enumerator and no one will notice. Unlock it:
+
+   ```shell
+   # Get transitions again and find the "To Do" (or "Blocked") transition id
+   jira -H "Accept: application/json" \
+     "$JB/rest/api/3/issue/<ISSUE-KEY>/transitions"
+   jira -H "Content-Type: application/json" \
+     -X POST "$JB/rest/api/3/issue/<ISSUE-KEY>/transitions" \
+     -d '{"transition":{"id":"<to-do transition id>"}}'
+   ```
+
+   If the transition back also fails, log it — but do not stop reporting the
+   original blocker just because the unlock failed.
+
+This is a normal, expected outcome of hitting the edge of what this sandbox can
+reach — not a failure to hide or apologize for.
 
 ## 11. Open the PR
 
@@ -369,8 +387,11 @@ comment summarizing what was changed and why.
 - Never skip or weaken the security fan-out in step 6 or 9 to save time.
 - Never skip the critical code review in step 7 - the independent model review
   is mandatory, not optional.
-- Never skip the deduplication check (step 2a) or the In Progress transition
+- Never skip the deduplication check (step 3a) or the In Progress transition
   (step 2b) — these are what prevent duplicate PRs on cron-driven runs.
+- Never leave a ticket In Progress on exit without either a PR link (step 12)
+  or a blocker comment (step 10). If you are stopping for any reason after step
+  2b, always comment on the ticket and transition it back to "To Do".
 - Never invent a target repository, a Jira host/email, or any credential -
   if you don't know it, that's a blocker (step 10), not something to guess.
 - Never retry past a `403` or any other access issue - report the exact
@@ -381,7 +402,7 @@ comment summarizing what was changed and why.
 ## Failures
 
 A genuine technical failure in this job's own mechanics (not a ticket-specific
-blocker - see step 7 for those) gets reported via `file_failure_issue`
+blocker - see step 10 for those) gets reported via `file_failure_issue`
 (sourced from `scripts/common.sh`) against `openshift-online/rosa-agent` -
 never retried, never routed around. `sync_fork.sh` already calls it on its
 own failure; call it directly for anything else:
@@ -390,3 +411,8 @@ own failure; call it directly for anything else:
 source /sandbox/.claude/skills/pmr-action-item/scripts/common.sh
 file_failure_issue "<stage>" "<exact captured error>"
 ```
+
+If the failure occurs after step 2b (the ticket is In Progress), also
+transition the ticket back to "To Do" and add a blocker comment per step 10
+before calling `file_failure_issue`. The GitHub issue documents the job
+failure; the ticket comment documents what needs unblocking.
