@@ -36,8 +36,24 @@ PROFILE_ID=$(grep -m1 '^id:' "$PROFILE_YAML" | awk '{print $2}')
 GLOBAL_ARGS=()
 [[ -n "$GLOBAL_FLAG" ]] && GLOBAL_ARGS+=("--global")
 
-EXPORT_OUTPUT=$(openshell -g "$GATEWAY" profile export "$PROFILE_ID" "${GLOBAL_ARGS[@]}" 2>&1) \
-    && PROFILE_EXISTS=true || PROFILE_EXISTS=false
+# Distinguish "profile not found" from other export failures (expired token,
+# network error, gateway unreachable). Only "not found" is safe to treat as
+# "first run"; all other errors are fatal so the operator sees them immediately
+# rather than silently re-importing an existing profile.
+# NOTE: "not found" is matched case-insensitively against the export output.
+# Verify this string against `openshell profile export --help` if it changes.
+EXPORT_EXIT=0
+EXPORT_OUTPUT=$(openshell -g "$GATEWAY" profile export "$PROFILE_ID" "${GLOBAL_ARGS[@]}" 2>&1) || EXPORT_EXIT=$?
+
+if [[ $EXPORT_EXIT -eq 0 ]]; then
+    PROFILE_EXISTS=true
+elif echo "$EXPORT_OUTPUT" | grep -qiF "not found"; then
+    PROFILE_EXISTS=false
+else
+    echo "error: 'openshell profile export' failed (exit $EXPORT_EXIT) with unexpected error:" >&2
+    echo "$EXPORT_OUTPUT" >&2
+    exit 1
+fi
 
 if [[ "$PROFILE_EXISTS" == false ]]; then
     echo "Profile '$PROFILE_ID' not found on gateway '$GATEWAY'; importing..."
