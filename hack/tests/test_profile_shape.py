@@ -1,4 +1,4 @@
-"""Tests for provider-profiles/openshell.yaml shape (AC 2).
+"""Tests for provider-profiles/*.yaml shape.
 
 Requires PyYAML (python3-pyyaml), which is a lint build-root dependency.
 Tests are skipped when the module is absent so the baseline stays clean
@@ -15,8 +15,13 @@ try:
 except ImportError:
     YAML_AVAILABLE = False
 
-PROFILE_PATH = (
-    Path(__file__).parent.parent.parent / "provider-profiles" / "openshell.yaml"
+PROFILES_DIR = Path(__file__).parent.parent.parent / "provider-profiles"
+PROFILE_PATH = PROFILES_DIR / "openshell.yaml"
+
+# ProviderProfileCategory enum values at v0.1.5 (sdk/go/proto/openshellv1/openshell.pb.go).
+# "infrastructure" is not in this enum — use "other" for categories that don't fit.
+_VALID_CATEGORIES = frozenset(
+    {"other", "inference", "agent", "source_control", "messaging", "data", "knowledge"}
 )
 
 
@@ -42,6 +47,15 @@ class TestOpenshellProfileShape(unittest.TestCase):
 
     def test_id(self):
         self.assertEqual(self.profile["id"], "openshell")
+
+    def test_category_is_valid_enum(self):
+        cat = self.profile.get("category")
+        self.assertIn(
+            cat,
+            _VALID_CATEGORIES,
+            f"category {cat!r} is not a valid ProviderProfileCategory enum value; "
+            f"valid values: {sorted(_VALID_CATEGORIES)}",
+        )
 
     def test_inference_capable_false(self):
         self.assertIs(self.profile.get("inference_capable"), False)
@@ -199,6 +213,35 @@ class TestOpenshellProfileShape(unittest.TestCase):
         self.assertIsNone(
             match,
             "raw credential-placeholder literal found; use 'openshell:resolve:env :' with a space",
+        )
+
+
+@unittest.skipUnless(YAML_AVAILABLE, "PyYAML required (install python3-pyyaml)")
+class TestAllProfileCategories(unittest.TestCase):
+    """Every provider profile must use a valid ProviderProfileCategory enum value.
+
+    Catches copy-paste errors (e.g. 'infrastructure') before the profile is
+    linted against a live gateway, where the parse failure is less informative.
+    Applies to every *.yaml in provider-profiles/ so new profiles are covered
+    automatically.
+    """
+
+    def test_all_profiles_have_valid_category(self):
+        yaml_files = sorted(PROFILES_DIR.glob("*.yaml"))
+        self.assertTrue(yaml_files, f"no YAML files found in {PROFILES_DIR}")
+        violations = []
+        for path in yaml_files:
+            with open(path, encoding="utf-8") as fh:
+                profile = yaml.safe_load(fh)
+            cat = profile.get("category") if isinstance(profile, dict) else None
+            if cat not in _VALID_CATEGORIES:
+                violations.append(
+                    f"  {path.name}: category={cat!r} — "
+                    f"must be one of {sorted(_VALID_CATEGORIES)}"
+                )
+        self.assertFalse(
+            violations,
+            "Invalid category in provider profile(s):\n" + "\n".join(violations),
         )
 
 
