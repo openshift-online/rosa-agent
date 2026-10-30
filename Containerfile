@@ -156,7 +156,8 @@ RUN grep -rl 'openshell:resolve:env:\|OPENSHELL-RESOLVE-ENV-' /sandbox/.agents/s
 # Baked at the OpenShell-standard path so it applies automatically when
 # --policy is not passed at sandbox create time. Precedence (lowest to highest):
 #   /etc/openshell/policy.yaml (this file) < OPENSHELL_SANDBOX_POLICY < --policy flag
-# Operators override per-sandbox with --policy, or gateway-wide via the env var.
+# Operators override per-sandbox with --policy. OPENSHELL_SANDBOX_POLICY is read
+# by the CLI at sandbox-create time (openshell-cli/src/run.rs), not by the gateway.
 COPY policies/default.yaml /etc/openshell/policy.yaml
 
 # --- pre-seed Claude Code trust state ---
@@ -188,9 +189,14 @@ RUN printf '%s\n' \
 # GOPATH/GOMODCACHE are left at Go's defaults ($HOME/go, $HOME/go/pkg/mod):
 # /sandbox is the sandbox user's, PVC-backed home, so the module cache lives
 # next to GOCACHE and persists across runs without a root-owned /go.
-ENV PATH="/usr/local/go/bin:/sandbox/go/bin:/sandbox/.local/bin:/usr/local/bin:/usr/bin:/bin" \
+# GOTOOLCHAIN=auto downloads a newer toolchain when go.mod requires one.
+# GODEBUG=gotoolchainexec=0 prevents go from exec-replacing itself with the
+# downloaded toolchain (keeps /usr/bin/go as the process ancestor for the
+# go-modules provider's binary-ancestry rule; see provider-profiles/go-modules.yaml).
+ENV PATH="/sandbox/go/bin:/sandbox/.local/bin:/usr/local/bin:/usr/bin:/bin" \
     GOCACHE=/sandbox/.cache/go-build \
     GOTOOLCHAIN=auto \
+    GODEBUG=gotoolchainexec=0 \
     XDG_CACHE_HOME=/tmp/sandbox-cache \
     HOME=/sandbox \
     DISABLE_AUTOUPDATER=1 \

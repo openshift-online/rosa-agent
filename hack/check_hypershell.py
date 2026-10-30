@@ -440,6 +440,37 @@ def _policy_yaml_to_json(src: dict) -> str:
     return json.dumps(src, separators=(",", ":"))
 
 
+def check_default_policy_network_rules_empty(
+    findings: Findings,
+    *,
+    _policy_path: Path | None = None,
+) -> None:
+    """Fail if policies/default.yaml contains any network_policies entries.
+
+    The goal state (plan 0014) is a base policy that grants no egress. Every
+    egress grant comes from an attached provider profile. A rule added here
+    defeats provider-level L7 enforcement via union semantics — one allow
+    anywhere admits the request, overriding a profile's narrower restriction.
+
+    _policy_path overrides the default location; it exists for unit tests only.
+    """
+    policy_path = _policy_path or REPO_ROOT / "policies/default.yaml"
+    if not policy_path.exists():
+        findings.error("policy-empty-check", f"{policy_path} not found")
+        return
+    with open(policy_path) as f:
+        src = yaml.safe_load(f)
+    rules = (src or {}).get("network_policies") or {}
+    if rules:
+        names = ", ".join(sorted(rules))
+        findings.error(
+            "policy-empty-check",
+            f"policies/default.yaml has {len(rules)} network_policies rule(s): "
+            f"{names}. The baked policy must carry no network rules (plan 0014); "
+            f"add a provider profile in provider-profiles/ instead.",
+        )
+
+
 def check_sandbox_template_policy_drift(
     findings: Findings,
     *,
@@ -526,6 +557,7 @@ def main() -> int:
     require_kustomize()
 
     findings = Findings()
+    check_default_policy_network_rules_empty(findings)
     check_sandbox_template_policy_drift(findings)
     for rel_path in EXPECTED_GATEWAY_NAME:
         docs = build(rel_path, findings)

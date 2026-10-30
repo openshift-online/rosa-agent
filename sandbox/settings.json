@@ -1,5 +1,6 @@
 {
   "apiKeyHelper": "printf %s \"$GOOGLE_VERTEX_AI_SERVICE_ACCOUNT_TOKEN\"",
+  "skipWebFetchPreflight": true,
   "env": {
     "CLAUDE_CODE_USE_VERTEX": "1",
     "CLAUDE_CODE_SKIP_VERTEX_AUTH": "1",

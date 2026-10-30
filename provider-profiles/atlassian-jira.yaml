@@ -34,14 +34,14 @@
 # declared under credentials[*].env_vars (i.e. JIRA_API_TOKEN) get injected.
 # Set the email and base URL as plain, non-secret environment variables at
 # sandbox creation time instead:
-#   openshell sandbox create --provider work-jira \
+#   openshell sandbox create --provider rosa-agent-jira \
 #       --env JIRA_EMAIL=you@yourcompany.com \
 #       --env JIRA_BASE_URL=https://yourcompany.atlassian.net \
 #       -- claude
 #
 # Attach to an existing sandbox (still needs the --env flags passed when
 # that sandbox was created — attach does not retroactively add them):
-#   openshell sandbox provider attach <sandbox> work-jira
+#   openshell sandbox provider attach <sandbox> rosa-agent-jira
 #
 # Inside the sandbox the agent sees JIRA_API_TOKEN set to an opaque
 # openshell:resolve:env :* placeholder. It uses it exactly like a real token:
@@ -175,5 +175,4 @@ endpoints:
       path: /ex/jira/*/rest/api/3/issueLink
 binaries:
 - /usr/bin/curl
-- /usr/local/bin/curl
 inference_capable: false

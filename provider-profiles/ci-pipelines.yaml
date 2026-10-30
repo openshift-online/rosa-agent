@@ -1,0 +1,65 @@
+# Capability profile: CI pipeline status (anonymous, read-only).
+#
+# Consolidates prow, codecov, github_actions, and github_assets from
+# policies/default.yaml (plan 0014). All share curl + claude because the
+# consumer is an agent or human reading CI pages with WebFetch, not a script.
+#
+# Why these hosts do NOT go into github.yaml: github.yaml's binaries list
+# includes gh and git. Adding curl + these hosts there would grant curl access
+# to api.github.com and github.com, a widening, not a tightening. The same
+# reasoning kept objects.githubusercontent.com and actions.githubusercontent.com
+# out of github.yaml in #115 and still applies.
+#
+# No credential — a provider of this type can be created with no credential value.
+#
+# Import:
+#   openshell -g <gateway> profile lint   --file provider-profiles/ci-pipelines.yaml
+#   openshell -g <gateway> profile import --file provider-profiles/ci-pipelines.yaml --global
+#
+# Create the provider (credential-less):
+#   openshell -g <gateway> provider create --name ro-ci_pipelines \
+#       --type ci-pipelines --global-profile
+#
+# Attach to: ops-sop-pr-review and interactive sessions. sop-improve and
+# image-vuln-check lose these hosts unless Feature 0 (access logs) shows they
+# reach them.
+#
+# Note: ops-sop-pr-review reads CI status through api.github.com check-runs,
+# which the github profile covers. This profile is needed only if the job
+# additionally reads raw CI pages (prow, codecov) or downloads GitHub Action
+# artifacts directly (actions.githubusercontent.com, objects.githubusercontent.com).
+
+id: ci-pipelines
+display_name: CI pipeline status (anonymous, read-only)
+description: Prow, Codecov, GitHub Actions artifact and asset hosts for CI status monitoring (anonymous, read-only)
+category: data
+endpoints:
+  - host: prow.ci.openshift.org
+    port: 443
+    protocol: rest
+    access: read-only
+    enforcement: enforce
+  - host: app.codecov.io
+    port: 443
+    protocol: rest
+    access: read-only
+    enforcement: enforce
+  - host: actions.githubusercontent.com
+    port: 443
+    protocol: rest
+    access: read-only
+    enforcement: enforce
+  - host: "*.actions.githubusercontent.com"
+    port: 443
+    protocol: rest
+    access: read-only
+    enforcement: enforce
+  # GitHub release asset and archive downloads. Kept here rather than in
+  # github.yaml so curl does not gain access to api.github.com/github.com.
+  - host: objects.githubusercontent.com
+    port: 443
+    protocol: rest
+    access: read-only
+    enforcement: enforce
+binaries: [/usr/bin/curl, /usr/bin/claude]
+inference_capable: false

@@ -179,6 +179,9 @@ openshellctl sandbox create \
   --provider rosa-agent-vertex \
   --provider rosa-agent-github \
   --provider rosa-agent-jira \
+  --provider ro-go_modules \
+  --provider ro-ci_pipelines \
+  --provider ro-redhat_docs \
   --no-keep \
   -- claude --dangerously-skip-permissions --print "Ping"
 ```

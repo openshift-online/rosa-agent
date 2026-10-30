@@ -1,0 +1,45 @@
+# Capability profile: Red Hat errata and security/VEX data (anonymous, read-only).
+#
+# Replaces the redhat_errata block that was in policies/default.yaml (plan 0014).
+# Kept separate from image-inspect because the binaries differ (no skopeo needed
+# for errata/CSAF lookups, which are plain curl HTTP calls).
+#
+# No credential — a provider of this type can be created with no credential value.
+#
+# Import:
+#   openshell -g <gateway> profile lint   --file provider-profiles/redhat-errata.yaml
+#   openshell -g <gateway> profile import --file provider-profiles/redhat-errata.yaml --global
+#
+# Create the provider (credential-less):
+#   openshell -g <gateway> provider create --name ro-redhat_errata \
+#       --type redhat-errata --global-profile
+#
+# Attach to: image-vuln-check.
+#
+# Behaviour change from policies/default.yaml:
+#   - /usr/bin/claude is dropped; the job skill drives these hosts through
+#     curl in Bash, never WebFetch. access.redhat.com hosts far more than
+#     errata (it is a general Red Hat CDN); dropping claude removes a
+#     broad WebFetch channel.
+#
+# Follow-up: once Feature 0 (access logs) shows the exact paths used,
+# narrow access.redhat.com to the errata and CSAF/VEX paths (e.g.
+# GET /errata/**, GET /security/cve/**) rather than read-only on /*.
+
+id: redhat-errata
+display_name: Red Hat errata and security data (anonymous, read-only)
+description: access.redhat.com errata/CSAF/VEX lookups and security.access.redhat.com (anonymous, read-only)
+category: data
+endpoints:
+  - host: access.redhat.com
+    port: 443
+    protocol: rest
+    access: read-only
+    enforcement: enforce
+  - host: security.access.redhat.com
+    port: 443
+    protocol: rest
+    access: read-only
+    enforcement: enforce
+binaries: [/usr/bin/curl]
+inference_capable: false

@@ -74,12 +74,12 @@ spec:
 
                   openshellctl doctor \
                     --provider rosa-agent-github \
-                    --provider rosa-agent-jira \
-                    --provider rosa-agent-vertex
+                    --provider rosa-agent-vertex \
+                    --provider ro-ci_pipelines
 
                   openshellctl sandbox create \
                     --replace \
-                    -f /sandbox/templates/noninteractive.yaml \
+                    -f /sandbox/templates/noninteractive-ops-sop-pr-review.yaml \
                     -p NAME="${NAME}" \
                     -p PROMPT="${PROMPT}"
               env:
