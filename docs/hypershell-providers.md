@@ -12,6 +12,26 @@ Nothing here is reconciled. OpenShell providers are not a HyperShell Kind, so
 they cannot live in `.hypershell/`; the profile YAML in `provider-profiles/` is
 the source of truth and these commands put it on a gateway.
 
+## Scripted provisioning (openshell profile)
+
+For the `openshell` provider profile specifically, `make openshell-provider` is the
+scripted, idempotent alternative to the manual steps in the sections below. It handles
+Vault login, gateway registration, profile lint + import-or-update, and provider
+create-or-update in one shot. The OIDC secret is read from Vault into env at runtime;
+it never hits Make output or argv. Prerequisites and usage:
+
+```bash
+export VAULT_ADDR=...
+export OPENSHELL_VAULT_KV_MOUNT=osd-sre
+export OPENSHELL_VAULT_KV_PATH=rosa-agent
+export OPENSHELL_VAULT_FIELD_PREFIX=hypershell
+
+make openshell-provider
+```
+
+The sections below describe the underlying steps `make openshell-provider` automates,
+and remain the reference for manual intervention, rollback, or applying other profiles.
+
 ## Three CLIs, and which one to reach for
 
 The single biggest source of confusion. They are not interchangeable.
