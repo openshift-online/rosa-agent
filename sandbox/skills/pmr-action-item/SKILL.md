@@ -15,9 +15,20 @@ that enumeration is out of scope here.
 
 **The `pmr-ai-ready` label indicates:**
 - The ticket has been through the proposal stage (`pmr-remediation-analysis` skill)
-- A structured remediation proposal exists
+- A structured remediation proposal exists as a Jira comment
 - Human grooming gate has approved (or is pending)
 - The ticket is ready for implementation
+
+**For cron/enumerator use:** any script that feeds issue keys to this skill MUST
+filter by `statusCategory = "To Do"` in its JQL. Tickets already In Progress or
+Done must never be handed to this skill — the status transition in step 2b is the
+distributed lock that makes this work across concurrent runs.
+
+Example enumerator JQL:
+```
+labels = "pmr-ai" AND labels = "pmr-ai-ready" AND assignee = "<rosa-agent accountId>"
+  AND statusCategory = "To Do" ORDER BY created ASC
+```
 
 Retrieval/mechanics that are genuinely deterministic (fork sync, failure
 reporting) are scripted below, exactly like the other job skills in this
@@ -67,6 +78,94 @@ and run its auth-detection block once. Then:
   .../assignee` yourself. If the ticket is assigned to someone else, stop
   there - note it in the final output and do not touch their ticket; don't
   `file_failure_issue` for this, it isn't a failure.
+
+## 2a. Check for an existing open PR or branch (deduplication)
+
+Before doing any implementation work, verify no prior run is already handling
+this ticket. A cron invoker can start two runs on the same ticket if the first
+run is slow; this check prevents opening a second PR.
+
+**Check for an open PR** from the `rosa-agent` fork targeting this issue key:
+
+```shell
+EXISTING_PR=$(gh api "repos/openshift-online/rosa-agent/pulls?state=open&per_page=100" --paginate   | python3 -I -c "
+import json, sys
+key = '${ISSUE_KEY}'
+for pr in json.load(sys.stdin):
+    repo = pr['head'].get('repo') or {}
+    if repo.get('owner', {}).get('login', '').lower() == 'rosa-agent':
+        if pr['head']['ref'] == f'pmr-action-item/{key}':
+            print(pr['number'], pr['html_url'])
+            break
+")
+```
+
+**Check for an existing branch** on the fork (a run may have pushed but not yet
+opened a PR, or may be in-flight right now):
+
+```shell
+BRANCH_STATUS=$(gh api   "repos/rosa-agent/rosa-agent/branches/pmr-action-item/${ISSUE_KEY}"   -i 2>&1 | head -1 | grep -o '[0-9]\{3\}')
+# 200 = branch exists; 404 = clear
+```
+
+**Also check for a merged PR** (ticket already completed):
+
+```shell
+MERGED_PR=$(gh api "repos/openshift-online/rosa-agent/pulls?state=closed&per_page=100" --paginate   | python3 -I -c "
+import json, sys
+key = '${ISSUE_KEY}'
+for pr in json.load(sys.stdin):
+    repo = pr['head'].get('repo') or {}
+    if repo.get('owner', {}).get('login', '').lower() == 'rosa-agent':
+        if pr['head']['ref'] == f'pmr-action-item/{key}':
+            print(pr['number'], pr.get('merged_at') or 'closed-unmerged')
+            break
+")
+```
+
+**Decision logic:**
+- Open PR found → stop; log the existing PR URL. Not a failure; do not call
+  `file_failure_issue`. The PR is already in review.
+- Branch exists (no open PR) → another run is in-flight. Stop and log. Not a
+  failure.
+- Merged PR found → ticket is done. Stop and log.
+- Closed-unmerged PR found → prior run was abandoned. The branch is someone
+  else's cleanup to handle; proceed from scratch on a fresh branch (the name
+  `pmr-action-item/<ISSUE-KEY>` will conflict — comment on the ticket as a
+  blocker, step 10, noting the abandoned branch).
+- Nothing found → clear to proceed.
+
+## 2b. Transition ticket to In Progress
+
+Immediately after step 2a confirms no existing work, transition the Jira ticket
+to **In Progress**. This is the distributed lock: a second cron run that picks
+up the same ticket from the "To Do" queue will find it already In Progress and
+skip it (because the enumerator filters by `statusCategory = "To Do"`).
+
+**Get the available transitions:**
+
+```shell
+jira -H "Accept: application/json"   "$JB/rest/api/3/issue/<ISSUE-KEY>/transitions"
+```
+
+Find the transition whose `name` is `"In Progress"` (or the nearest equivalent
+in this project's workflow — look for `to.statusCategory.key = "indeterminate"`).
+Extract its numeric `id`.
+
+**Apply the transition:**
+
+```shell
+jira -H "Content-Type: application/json"   -X POST "$JB/rest/api/3/issue/<ISSUE-KEY>/transitions"   -d '{"transition":{"id":"<id from above>"}}'
+```
+
+**If the transition returns a non-2xx response:** another run beat this one to
+the transition — the ticket is no longer in "To Do". Stop immediately; log the
+HTTP status and stop. Do not call `file_failure_issue` — this is the race-condition
+guard working as designed, not a failure.
+
+**After a successful transition,** continue to step 3. All remaining steps should
+complete for this run — the ticket is now locked to this run via its In Progress
+status.
 
 ## 3. Identify the target repository
 
@@ -270,6 +369,8 @@ comment summarizing what was changed and why.
 - Never skip or weaken the security fan-out in step 6 or 9 to save time.
 - Never skip the critical code review in step 7 - the independent model review
   is mandatory, not optional.
+- Never skip the deduplication check (step 2a) or the In Progress transition
+  (step 2b) — these are what prevent duplicate PRs on cron-driven runs.
 - Never invent a target repository, a Jira host/email, or any credential -
   if you don't know it, that's a blocker (step 10), not something to guess.
 - Never retry past a `403` or any other access issue - report the exact
