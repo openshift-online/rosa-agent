@@ -90,8 +90,12 @@ class TestImportPath(unittest.TestCase):
         self.profile = self.tmp / "profile.yaml"
         _write(self.profile, _PROFILE_YAML)
         fake_dir = _make_fake_dir(self.tmp)
+        # Export must emit "not found" text so the new error-distinction logic
+        # recognises this as a first-run (not a fatal connection/auth error).
         self.calls_log, _ = _write_fake_openshell(
-            fake_dir, self.tmp, export_exits_ok=False, import_exit=0
+            fake_dir, self.tmp, export_exits_ok=False,
+            export_output="Error: profile 'test-profile' not found",
+            import_exit=0,
         )
         self.env = {**os.environ, "PATH": str(fake_dir) + ":" + os.environ.get("PATH", "")}
 
@@ -277,6 +281,83 @@ class TestInputValidation(unittest.TestCase):
 
     def test_missing_profile_file_exits_nonzero(self):
         self.assertNotEqual(self._run(["my-gw", "/no/such/file.yaml"]).returncode, 0)
+
+
+class TestExportFailureDistinction(unittest.TestCase):
+    """Export failure from 'not found' vs. other errors (auth, network) are distinguished.
+
+    'not found' → import path (idempotent, safe).
+    Other errors → fail fast so the operator knows something is wrong with
+    their Vault token, network, or gateway config rather than silently
+    re-importing an existing profile.
+    """
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.profile = self.tmp / "profile.yaml"
+        _write(self.profile, _PROFILE_YAML)
+
+    def tearDown(self):
+        import shutil; shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _make_fake(self, exit_code, output_text):
+        """Fake openshell that exits with exit_code and prints output_text on 'profile export'."""
+        fake_dir = self.tmp / "fake_bin"
+        fake_dir.mkdir(exist_ok=True)
+        calls_log = self.tmp / "calls.log"
+        # Write export output to a file to avoid repr() escaping issues with newlines.
+        export_out = self.tmp / "export_out.txt"
+        export_out.write_text(output_text, encoding="utf-8")
+        script = textwrap.dedent(f"""\
+            #!/usr/bin/env bash
+            printf '%s\\n' "$*" >> {calls_log}
+            if [[ "$*" == *"profile export"* ]]; then
+                cat {export_out}
+                exit {exit_code}
+            fi
+            exit 0
+        """)
+        _write(fake_dir / "openshell", script, mode=0o755)
+        env = {**os.environ, "PATH": str(fake_dir) + ":" + os.environ.get("PATH", "")}
+        return env, calls_log
+
+    def test_not_found_export_triggers_import(self):
+        """Export exit 1 with 'not found' text → import is called (profile does not exist)."""
+        env, calls_log = self._make_fake(1, "Error: profile 'test-profile' not found")
+        r = subprocess.run(
+            ["bash", str(SCRIPT), "gw", str(self.profile), "--global"],
+            capture_output=True, text=True, env=env
+        )
+        self.assertEqual(r.returncode, 0, r.stderr)
+        calls = calls_log.read_text()
+        self.assertIn("profile import", calls, "import must be called when export says 'not found'")
+        self.assertNotIn("profile update", calls)
+
+    def test_unexpected_export_error_is_fatal(self):
+        """Export exit 1 with auth/network error text → script exits nonzero (fail-fast)."""
+        env, calls_log = self._make_fake(1, "Error: connection refused")
+        r = subprocess.run(
+            ["bash", str(SCRIPT), "gw", str(self.profile), "--global"],
+            capture_output=True, text=True, env=env
+        )
+        self.assertNotEqual(r.returncode, 0,
+            "unexpected export error must cause the script to exit nonzero (fail-fast)")
+        calls = calls_log.read_text()
+        self.assertNotIn("profile import", calls,
+            "import must NOT be called after an unexpected export error")
+        self.assertNotIn("profile update", calls)
+
+    def test_export_exit0_still_takes_update_path(self):
+        """Export exit 0 (profile exists) → update path is taken regardless of output."""
+        env, calls_log = self._make_fake(0, "id: test-profile\nresource_version: 9\n")
+        r = subprocess.run(
+            ["bash", str(SCRIPT), "gw", str(self.profile)],
+            capture_output=True, text=True, env=env
+        )
+        self.assertEqual(r.returncode, 0, r.stderr)
+        calls = calls_log.read_text()
+        self.assertIn("profile update", calls)
+        self.assertNotIn("profile import", calls)
 
 
 if __name__ == "__main__":
