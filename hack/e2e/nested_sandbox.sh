@@ -47,60 +47,78 @@ _fail()  { printf '[e2e] FAIL: %s\n' "$*" >&2; FAIL=$((FAIL + 1)); }
 
 # ---------------------------------------------------------------------------
 # Cleanup: remove any leftover e2e-nested-* sandboxes from the host.
+# Uses --output json so the name field is unambiguous regardless of table format.
 # Does not rely on the inner sandbox cleaning up after itself.
 # ---------------------------------------------------------------------------
 _cleanup() {
     _info "Cleaning up e2e-nested-* sandboxes..."
-    openshellctl -g "$GATEWAY_NAME" sandbox list 2>/dev/null \
-        | awk '/^e2e-nested-/{print $1}' \
-        | xargs -r -I{} openshellctl -g "$GATEWAY_NAME" sandbox delete {} 2>/dev/null || true
+    local names
+    names=$(openshellctl -g "$GATEWAY_NAME" sandbox list --output json 2>/dev/null \
+        | python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+sandboxes = data if isinstance(data, list) else data.get('sandboxes', data.get('items', []))
+for s in sandboxes:
+    name = s.get('name', s.get('metadata', {}).get('name', ''))
+    if name.startswith('e2e-nested-'):
+        print(name)
+" 2>/dev/null) || true
+    if [[ -n "$names" ]]; then
+        while IFS= read -r name; do
+            [[ -n "$name" ]] || continue
+            openshellctl -g "$GATEWAY_NAME" sandbox delete "$name" 2>/dev/null || true
+        done <<< "$names"
+    fi
     _info "Cleanup done."
 }
 trap '_cleanup' EXIT
 
 # ---------------------------------------------------------------------------
 # Helper: create an outer sandbox, wait for it, return its exit code.
+# Extra args (zero or more --provider NAME pairs) are forwarded verbatim.
 # ---------------------------------------------------------------------------
 _run_sandbox() {
-    local name=$1 script=$2 provider_refs=$3
+    local name=$1 script=$2
+    shift 2
     _info "Starting sandbox: $name"
     openshellctl -g "$GATEWAY_NAME" sandbox create \
         --name "$name" \
         -f "$(dirname "$0")/nested-sandbox.yaml" \
         -p "NAME=$name" \
         -p "IMAGE=$IMAGE" \
-        -p "SCRIPT=$(printf '%q' "$script")" \
-        -p "PROVIDER_REFS=$provider_refs" \
+        -p "SCRIPT=$script" \
         -p "GATEWAY_ENDPOINT=$GATEWAY_ENDPOINT" \
         -p "OIDC_ISSUER=$OIDC_ISSUER" \
         -p "OIDC_CLIENT_ID=$OIDC_CLIENT_ID" \
         -p "OIDC_AUDIENCE=$OIDC_AUDIENCE" \
-        --no-keep --no-tty --no-auto-providers 2>&1
+        --no-keep --no-tty --no-auto-providers \
+        "$@" 2>&1
 }
 
 # ---------------------------------------------------------------------------
-# Check 1: Negative control — no providerRefs → gateway call must be denied.
-# Proves the profile is the thing granting access; without it, no OIDC egress.
+# Check 1: Negative control — no provider → proxy must deny the OIDC call.
+# A dummy client secret is injected so openshellctl actually attempts the
+# token POST to Keycloak; without the openshell provider the proxy has no
+# Keycloak endpoint in its allow-list and emits policy_denied.
+# Any nonzero exit WITHOUT a proxy-shaped denial is a FAIL (it means the
+# sandbox died before reaching the proxy — e.g. missing credential locally).
 # ---------------------------------------------------------------------------
 _info "=== Check 1: negative control (no provider) ==="
 NAME1="e2e-nested-${RUN_ID}-1"
-SCRIPT1="openshellctl gateway add \"\$OPENSHELL_GATEWAY_ENDPOINT\" --name inner && openshellctl whoami"
+# Prefix OPENSHELL_OIDC_CLIENT_SECRET=e2e-dummy so openshellctl attempts the
+# token POST; the proxy (no openshell provider attached) must deny it.
+SCRIPT1="OPENSHELL_OIDC_CLIENT_SECRET=e2e-dummy openshellctl gateway add \"\$OPENSHELL_GATEWAY_ENDPOINT\" --name inner && openshellctl whoami"
 set +e
-output1=$(_run_sandbox "$NAME1" "$SCRIPT1" "[]" 2>&1)
+output1=$(_run_sandbox "$NAME1" "$SCRIPT1" 2>&1)
 exit1=$?
 set -e
 
-if [[ $exit1 -ne 0 ]]; then
-    _pass "Check 1: sandbox exited nonzero ($exit1) as expected without provider"
+if echo "$output1" | grep -qiE "policy.denied|policy_denied|credential_endpoint_mismatch|forbidden|denied"; then
+    _pass "Check 1: proxy denied the OIDC call as expected (exit=$exit1)"
 else
-    # Even exit 0 is a FAIL if it means the gateway accepted the call
-    if echo "$output1" | grep -qiE "policy.denied|no credentials|denied|forbidden|policy_denied"; then
-        _pass "Check 1: exit 0 but output contains policy denial — provider gate working"
-    else
-        _fail "Check 1: sandbox exited 0 and no denial in output (provider should be required)"
-        echo "--- output ---"
-        echo "$output1"
-    fi
+    _fail "Check 1: no proxy-shaped denial in output — provider gate may not be enforced (exit=$exit1)"
+    echo "--- output ---"
+    echo "$output1"
 fi
 
 # ---------------------------------------------------------------------------
@@ -120,10 +138,9 @@ openshellctl -g inner sandbox create \
     -- echo CHILD_OK
 INNERSCRIPT
 )
-PROVIDERS2='[{"name":"rosa-agent-openshell"}]'
 
 set +e
-output2=$(_run_sandbox "$NAME2" "$SCRIPT2" "$PROVIDERS2" 2>&1)
+output2=$(_run_sandbox "$NAME2" "$SCRIPT2" --provider "rosa-agent-openshell" 2>&1)
 exit2=$?
 set -e
 
@@ -137,16 +154,19 @@ fi
 
 # ---------------------------------------------------------------------------
 # Check 3: Agent-driven — Claude creates the child sandbox via openshellctl.
+# Resolved values (non-secrets) are substituted directly so the Claude prompt
+# has concrete values rather than unexpanded shell variable names.
 # ---------------------------------------------------------------------------
 _info "=== Check 3: agent-driven nested sandbox ==="
 NAME3="e2e-nested-${RUN_ID}-3"
 CHILD3="${NAME3}-child"
-PROMPT3="Using openshellctl, register the gateway at \$OPENSHELL_GATEWAY_ENDPOINT as 'inner', run openshellctl doctor, then create a sandbox named ${CHILD3} from image \$IMAGE with --no-keep --no-tty --no-auto-providers whose command is \`echo CHILD_OK\`. Print the child's output verbatim and nothing else."
+PROMPT3="Using openshellctl, register the gateway at ${GATEWAY_ENDPOINT} as 'inner', run openshellctl doctor, then create a sandbox named ${CHILD3} from image ${IMAGE} with --no-keep --no-tty --no-auto-providers whose command is \`echo CHILD_OK\`. Print the child's output verbatim and nothing else."
 SCRIPT3="claude --dangerously-skip-permissions --print \"$PROMPT3\""
-PROVIDERS3='[{"name":"rosa-agent-openshell"},{"name":"rosa-agent-vertex"}]'
 
 set +e
-output3=$(_run_sandbox "$NAME3" "$SCRIPT3" "$PROVIDERS3" 2>&1)
+output3=$(_run_sandbox "$NAME3" "$SCRIPT3" \
+    --provider "rosa-agent-openshell" \
+    --provider "rosa-agent-vertex" 2>&1)
 exit3=$?
 set -e
 
