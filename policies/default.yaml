@@ -48,4 +48,14 @@ filesystem_policy:
 # attached has no GitHub egress at all.
 # NOTE: Vertex AI egress is intentionally NOT in this baked policy. See
 # provider-profiles/google-vertex-ai.yaml.
+# NOTE: OpenShell gateway and Keycloak egress are intentionally NOT in this
+# baked policy. The `openshell` provider profile (provider-profiles/openshell.yaml)
+# composes Keycloak endpoints (keycloak.hyp2.infra.hypershell.app and any
+# future hyp1/hyp0 equivalents) with request_body_credential_rewrite: true
+# and enforcement: enforce, so that OPENSHELL_OIDC_CLIENT_SECRET is substituted
+# only on the token-mint POST. The gateway host
+# (gw-openshell-*.hyp2-spoke1.infra.hypershell.app) is L4 and carries no
+# credential — authorization is enforced server-side by the SA role. A coarse
+# block here would permit the client-secret to reach any host. Attach the
+# openshell provider to grant this access; do not add it here.
 network_policies: {}
