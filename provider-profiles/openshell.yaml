@@ -53,7 +53,8 @@
 id: openshell
 display_name: OpenShell gateway (self-service sandboxes)
 description: Lets a sandboxed agent mint its own gateway token via OIDC client_credentials and act as an openshellctl client of its own gateway, e.g. to create child sandboxes
-category: infrastructure
+# "infrastructure" is not a ProviderProfileCategory enum value (v0.1.5); use "other"
+category: other
 credentials:
 - name: oidc_client_secret
   description: OIDC client_credentials secret for the rosa-agent HyperShell service account (Vault osd-sre/rosa-agent field hypershell-oidc-client-secret)
