@@ -71,11 +71,15 @@ and run its auth-detection block once. Then:
 `GET $JB/rest/api/3/issue/<ISSUE-KEY>`
 
 - Confirm BOTH the `pmr-ai` and `pmr-ai-ready` labels are present on the ticket.
-  - If `pmr-ai-ready` is missing → the ticket hasn't been through the proposal
-    stage yet (`pmr-remediation-analysis` skill). Stop and report via
-    `file_failure_issue` - this is a workflow violation, not a ticket blocker.
+  - If `pmr-ai` is present but `pmr-ai-ready` is missing → the ticket hasn't
+    completed the proposal stage (`pmr-remediation-analysis` skill). This is a
+    ticket-specific condition, not a job failure — comment on the ticket (step 10
+    style) that it's missing `pmr-ai-ready` and stop. Do **not** call
+    `file_failure_issue`; the enumerator JQL includes `pmr-ai-ready` so cron
+    can't hit this path, making `file_failure_issue` spam-on-every-run.
   - If neither label is present → stop and report via `file_failure_issue`
-    (bad invocation - this skill is only for PMR action items).
+    (bad invocation — this skill only handles PMR action items, and there's no
+    ticket to comment on).
 - Read the full description and every comment - the work to do is described
   there, not inferred from the summary line alone.
 - **Do not self-assign the ticket.** Assignment to `rosa-agent` is expected
@@ -110,30 +114,39 @@ jira -H "Content-Type: application/json" \
   -d '{"transition":{"id":"<id from above>"}}'
 ```
 
-**If the transition returns a non-2xx response:** another run beat this one to
-the transition — the ticket is no longer in "To Do". Stop immediately and log
-the HTTP status. Do not call `file_failure_issue` — this is the race-condition
-guard working as designed, not a failure.
+**Interpret the response by status:**
+- **2xx** → transition succeeded; continue.
+- **400 or 409** → likely a workflow constraint or race (the ticket left "To Do"
+  before this POST arrived). Stop quietly; do not call `file_failure_issue` —
+  this is the race-condition guard working as designed.
+- **401 or 403** → access error. This is a step 10 blocker: comment on the
+  ticket and stop. Do not mistake a proxy denial for a race loss.
 
-**Race condition note:** This lock is reliable only if the Jira workflow defines
-"In Progress" as a status-specific transition (i.e. only reachable from "To Do").
-If "In Progress" is a global transition (reachable from any status), a second
-run's POST will succeed even after the first run already transitioned — both will
-proceed. To verify: after the transition, re-read the issue changelog
-(`GET .../issue/<KEY>?expand=changelog`) and confirm the most recent status-change
-event has a `created` timestamp within the last few seconds. If not, another run
-beat you; stop.
+**Race condition note:** The Jira transition is a fast-path filter, not a hard
+mutex. If "In Progress" is a global transition in this Jira workflow (reachable
+from any status), a second run's POST will also succeed and both runs will
+proceed past 2b. Jira provides no compare-and-swap for transitions. The hard,
+atomic lock comes one step later in git (step 4):
 
-**After a successful transition,** continue to step 3. All remaining steps should
-complete for this run — the ticket is now locked to this run via its In Progress
-status.
+```shell
+git push --force-with-lease=refs/heads/${BRANCH}: origin "HEAD:refs/heads/${BRANCH}"
+```
+
+The empty expected value after the colon tells the server to reject the push
+unless the remote ref does not yet exist. This is evaluated atomically by the
+git server — the second run's push is rejected even when both runs are on
+identical commits. **A rejected push means this run lost the race: transition
+the ticket back to "To Do" and stop.** No ticket comment is needed; the other
+run holds the lock and will comment if it hits a blocker.
+
+**After a successful 2xx transition,** continue to step 3.
 
 ## 3. Identify the target repository
 
 This is inference, not a script: look for an explicit `owner/repo` or GitHub
 URL in the description/comments, the Jira project/component naming
 conventions, or linked issues. If you genuinely cannot determine which repo
-the ticket concerns, that's a blocker - go to step 7 (comment on the ticket
+the ticket concerns, that's a blocker - go to step 10 (comment on the ticket
 asking for the repo) rather than guessing one.
 
 From this point on, `$UPSTREAM` is the owner/repo identified above (e.g.
@@ -162,19 +175,24 @@ gh api "repos/${FORK}/branches/${BRANCH}" --jq '.name' >/dev/null 2>&1
 BRANCH_EXISTS=$?  # 0 = branch exists; non-zero = 404 / not found
 ```
 
-**Decision logic:**
-- PR found, `state=open` → stop; log the existing PR URL. Not a failure; do
-  not call `file_failure_issue`. The PR is already in review.
-- PR found, `merged_at` is not null → ticket is done. Stop and log.
-- PR found, `state=closed` and `merged_at` is null → prior run was abandoned;
-  this is a step 10 blocker. Comment on the ticket noting the closed-unmerged
-  PR (include URL) and that a human must clean up the branch and PR before this
-  ticket can be retried. Stop.
-- No PR, but `$BRANCH_EXISTS=0` (branch exists on fork) → another run may be
-  in-flight or crashed mid-push. This is a step 10 blocker: comment on the
-  ticket noting the orphaned branch, and stop. Do not silently discard — nobody
-  reads cron stdout.
-- No PR, no branch → clear to proceed.
+**Decision logic — and what to do with the In Progress lock in each case:**
+
+- **PR found, `state=open`** — work is already in review. Leave the ticket In
+  Progress (it correctly reflects active work). Ensure the remote link exists on
+  the ticket (`POST .../remotelink` if not already there). Stop — not a failure.
+- **PR found, `merged_at` not null** — ticket is done. Transition the ticket to
+  Done (find a "Done" or "Closed" transition id and POST it), or if that
+  transition is unavailable, leave a comment noting the PR is merged and the
+  ticket should be closed. Stop.
+- **PR found, `state=closed`, `merged_at` null** — prior run was abandoned; this
+  is a step 10 blocker. Comment on the ticket noting the closed-unmerged PR
+  (include URL), transition back to "To Do" (unlock), and stop. A human must
+  clean up the branch and PR before retrying.
+- **No PR, `$BRANCH_EXISTS=0`** (branch on fork, no PR) — a prior run may have
+  crashed mid-push. This is a step 10 blocker: comment on the ticket noting the
+  orphaned branch, transition back to "To Do" (unlock), and stop. Do not
+  silently discard — nobody reads cron stdout.
+- **No PR, no branch** → clear to proceed.
 
 ## 4. Fork and sync, then branch
 
@@ -192,11 +210,20 @@ FORK=rosa-agent/<repo-name> UPSTREAM=<owner>/<repo> \
   merge.
 - Do this fresh every run, even against a repo you've synced before.
 
-Then check out a feature branch named from the issue key, e.g.:
+Then check out a feature branch named from the issue key, and immediately
+push it with the atomic lease (the hard mutex against concurrent runs):
 
 ```shell
 git checkout -b "pmr-action-item/<ISSUE-KEY>"
+git push --force-with-lease=refs/heads/pmr-action-item/<ISSUE-KEY>: \
+  origin "HEAD:refs/heads/pmr-action-item/<ISSUE-KEY>"
 ```
+
+If the push is **rejected** (exit code non-zero, remote says the ref already
+exists), another run beat you to this branch. Transition the ticket back to
+"To Do" and stop — no comment needed, the other run holds the lock.
+If the push succeeds, this run owns the branch for the lifetime of the ticket.
+(Step 11 does the real content push; this push establishes the lease.)
 
 ## 5. Implement the work described in the ticket
 
