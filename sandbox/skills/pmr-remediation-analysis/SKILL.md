@@ -610,26 +610,36 @@ jira -H "Content-Type: application/json" \
 
 **Post the full proposal as an ADF comment:**
 After tagging, post the **complete structured proposal** as a Jira comment using
-ADF format. This is required — the `pmr-action-item` skill's step 7b reads the
-proposal from this comment to verify implementation adherence. A placeholder link
-is not sufficient; the full text must be in the comment so it is retrievable via
-the Jira API without any attachment or external document access.
+ADF format. This is required — the `pmr-action-item` skill's step 2 and step 7b
+read the proposal from this comment to verify implementation adherence. The
+`pmr-action-item` step 2 looks for the exact preamble line:
+`PMR Remediation Analysis: Proposal complete — pmr-ai-ready tagged.`
 
-The comment body (ADF) must contain the complete proposal text: Failure Mechanism,
-Proposed Change (TYPE/WHAT/WHERE/HOW), Rationale, Verification Approach, and
-Provenance sections. Include a preamble line:
+Prepend that exact line to the proposal text, then convert to ADF using the
+bundled script (handles the proposal template's headings, lists, code blocks,
+and bold inline text without manual JSON construction):
 
+```shell
+# Build the full comment text
+COMMENT_TEXT="PMR Remediation Analysis: Proposal complete — pmr-ai-ready tagged.
+
+${PROPOSAL_TEXT}
+
+Next: Human grooming gate for approval before implementation."
+
+# Convert to ADF JSON
+ADF_BODY=$(echo "$COMMENT_TEXT" | python3 -I \
+  /sandbox/.claude/skills/pmr-remediation-analysis/scripts/md_to_adf.py)
+
+# Post as a Jira comment
+jira -H "Content-Type: application/json" \
+  -X POST "$JB/rest/api/3/issue/<ISSUE-KEY>/comment" \
+  -d "$ADF_BODY"
 ```
-PMR Remediation Analysis: Proposal complete — pmr-ai-ready tagged.
 
-[full proposal text follows]
-
-Next: Human grooming gate for approval before implementation.
-```
-
-Use the `jira` skill's comment endpoint (`POST .../comment`) with ADF `doc`
-content, not plain text — the skill's comment body must be searchable as structured
-content for downstream readers.
+The script outputs `{"body": {...ADF doc...}}` ready to POST. The full proposal
+text (Failure Mechanism, Proposed Change, Rationale, Verification Approach,
+Provenance) must be in `$PROPOSAL_TEXT` — do not post a truncated summary.
 
 ## Decline Path: Cannot Propose Sound Remediation
 

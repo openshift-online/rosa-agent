@@ -82,6 +82,15 @@ and run its auth-detection block once. Then:
     ticket to comment on).
 - Read the full description and every comment - the work to do is described
   there, not inferred from the summary line alone.
+- **Check for the remediation proposal comment now.** Search the ticket's
+  comments for one beginning with the exact marker:
+  `PMR Remediation Analysis: Proposal complete — pmr-ai-ready tagged.`
+  This comment is posted by `pmr-remediation-analysis` step 8 before the
+  `pmr-ai-ready` tag is applied. If no such comment exists, this is a step 10
+  blocker — comment on the ticket that the proposal comment is missing and stop.
+  Do not proceed to implementation: the ticket may be misconfigured, or the
+  skill may have posted to stdout only. Checking here (not at step 7) avoids
+  wasting a full implementation run on a misconfigured ticket.
 - **Do not self-assign the ticket.** Assignment to `rosa-agent` is expected
   to already be set by whatever triggered this run - never call `PUT
   .../assignee` yourself. If the ticket is assigned to someone else, stop
@@ -279,12 +288,11 @@ Spawn a subagent with **`model="fable"`** (or `model="opus"` if Fable is
 unavailable, `model="haiku"` as a last fallback) to review code quality,
 correctness, and best practices.
 
-**Model availability note:** Only `claude-sonnet-4-6` is verified enabled in
-the Vertex project. If you fall back to a non-preferred model, log it loudly:
-post a comment to the ticket stating which model was used and that enablement
-of the preferred model should be verified. Do **not** silently downgrade — a
-fallback to `haiku` for both 7a and 7b collapses the "independent model"
-guarantee.
+**Model availability:** If the preferred model (`fable`) is unavailable and you
+fall back, do **not** silently downgrade. If 7a falls to `haiku` and 7b also
+falls to `haiku`, both reviewers are the same model and the "independent model"
+guarantee collapses — treat that as a step 10 blocker: comment on the ticket
+stating the model availability issue and stop.
 
 Give the reviewing agent:
 
@@ -312,17 +320,13 @@ if Opus is unavailable) to verify the implementation matches the approved
 remediation proposal. This reviewer is scoped entirely to proposal adherence —
 it does not re-do the quality review above.
 
-**Fetch the proposal first.** Before spawning the subagent, search the Jira
-ticket's comment history for the proposal comment posted by `pmr-remediation-analysis`
-(it contains the full structured proposal with Failure Mechanism, Proposed Change,
-Rationale, Verification Approach, and Provenance sections). If no such comment
-exists, **do not proceed with 7b** — treat this as a step 10 blocker: comment on
-the ticket that the proposal comment is missing and implementation cannot be
-reviewed for adherence until it is posted, then stop.
+**Retrieve the proposal** from the comment you verified in step 2 (the one
+starting with `PMR Remediation Analysis: Proposal complete — pmr-ai-ready tagged.`).
+By the time you reach step 7b, the proposal is already confirmed to exist.
 
 Give the reviewing agent:
 
-- The approved remediation proposal (the full text retrieved from Jira comments above)
+- The approved remediation proposal (the full comment text retrieved from Jira)
 - The full diff (`git diff main...HEAD` or equivalent)
 - The target repository's conventions (language, style, patterns observed in the codebase)
 
