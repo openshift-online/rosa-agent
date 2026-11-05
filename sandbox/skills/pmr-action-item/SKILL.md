@@ -14,6 +14,7 @@ ticket end to end. A future enumerator/CronJob could discover every open
 that enumeration is out of scope here.
 
 **The `pmr-ai-ready` label indicates:**
+
 - The ticket has been through the proposal stage (`pmr-remediation-analysis` skill)
 - A structured remediation proposal exists as a Jira comment
 - Human grooming gate has approved (or is pending)
@@ -312,6 +313,14 @@ Ask it to critically assess:
    conventions? Does it break encapsulation or introduce coupling?
 6. **Performance** - obvious inefficiencies, unnecessary allocations, N+1
    queries
+
+The reviewer must return **structured findings** with:
+
+- **Severity**: CRITICAL (blocks PR), IMPORTANT (should fix), MINOR (nice-to-have)
+- **File and line number**
+- **Specific issue** - not vague ("improve error handling") but concrete
+  ("function X doesn't check for nil Y before calling Y.Method()")
+- **Suggested fix** - what specific change resolves it
 
 ### 7b. Proposal adherence review (PMR-specific) - mandatory
 
