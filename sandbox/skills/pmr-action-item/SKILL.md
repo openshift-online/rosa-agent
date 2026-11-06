@@ -1,6 +1,6 @@
 ---
 name: pmr-action-item
-description: Investigate and resolve a PMR (Post-Mortem Review) action-item Jira ticket (labels pmr-ai and pmr-ai-ready) assigned to the rosa-agent user - read the ticket, fork the repo it concerns, implement the described work on a feature branch, run security review, then critical code review with a different model, implement review findings, re-run security check, and open a PR. Built for per-ticket invocation (one issue key per run); a future job/cron could enumerate pmr-ai-ready tickets and invoke this once per key, the way job-image-vuln-check fans out over targets. Use when asked to investigate, work, or action a PMR ticket/action item, or when given a Jira issue key labeled pmr-ai-ready. Trigger keywords - PMR, PMR action item, pmr-ai-ready, post-mortem action item, investigate ticket, action item ticket.
+description: Investigate and resolve a PMR (Post-Mortem Review) action-item Jira ticket (labels pmr-ai and pmr-ai-ready) assigned to the rosa-agent user - read the ticket, claim it with pmr-ai-wip, transition to In Progress, fork the repo, implement on a feature branch, run security review, then critical code review with a different model, implement review findings, re-run security check, and open a PR. Also handles revision runs when job-pmr-pr-review sets pmr-pr-changes-requested after a reviewer requests changes. Sets pmr-ai-blocked when hitting an unresolvable blocker so cron jobs stop retrying. Built for per-ticket invocation (one issue key per run). Trigger keywords - PMR, PMR action item, pmr-ai-ready, pmr-pr-changes-requested, post-mortem action item, investigate ticket, action item ticket, address review feedback.
 ---
 
 # PMR action item: investigate a ticket, fix it, PR it
@@ -12,6 +12,22 @@ ticket end to end. A future enumerator/CronJob could discover every open
 `pmr-ai-ready` ticket assigned to `rosa-agent` and invoke this skill once per key
 (mirroring how `job-image-vuln-check` fans out over its target list), but
 that enumeration is out of scope here.
+
+This skill runs in two modes, detected automatically in step 2:
+
+- **Initial run** (`pmr-ai-ready` label present, no `pmr-pr-changes-requested`):
+  fresh implementation on a new branch ending with an open PR.
+- **Revision run** (`pmr-pr-changes-requested` label present): a reviewer
+  requested changes on an existing PR. The agent returns to the branch,
+  addresses each piece of feedback, and re-enters the review cycle.
+
+**Label protocol for this skill:**
+
+| Label | Meaning | Set by |
+|---|---|---|
+| `pmr-ai-wip` | Run in progress; skip on cron re-fire | This skill (step 2) |
+| `pmr-ai-blocked` | Unresolvable blocker; human must re-queue | This skill (step 10) |
+| `pmr-pr-pending` | PR open, awaiting review | This skill (step 12) |
 
 **The `pmr-ai-ready` label indicates:**
 
@@ -48,25 +64,57 @@ is a usage error, not a blocker to negotiate with the ticket - there's no
 ticket yet to comment on. Stop and report it via `file_failure_issue` (see
 the Failures section below): a human reads that later, not a live prompt.
 
-## 2. Read the ticket
+## 2. Read the ticket, claim it, detect run mode
 
 Per `AGENTS.md`, any Jira call MUST go through the `jira` skill - load it now
 and run its auth-detection block once. Then:
 
 `GET $JB/rest/api/3/issue/<ISSUE-KEY>`
 
-- Confirm BOTH the `pmr-ai` and `pmr-ai-ready` labels are present on the ticket.
-  - If `pmr-ai-ready` is missing → the ticket hasn't been through the proposal
-    stage yet (`pmr-remediation-analysis` skill). Stop and report via
-    `file_failure_issue` - this is a workflow violation, not a ticket blocker.
-  - If neither label is present → stop and report via `file_failure_issue`
-    (bad invocation - this skill is only for PMR action items).
-- Read the full description and every comment - the work to do is described
+**Validate labels:**
+
+- Confirm `pmr-ai` is present. If not → stop and report via `file_failure_issue`
+  (bad invocation - this skill is only for PMR action items).
+- If `pmr-ai-blocked` is present → stop. This ticket is parked for human
+  triage. Do not comment; do not `file_failure_issue`. Log "skipped: pmr-ai-blocked" and exit.
+- If `pmr-ai-wip` is present → another run is already in progress. Stop
+  without action to avoid a duplicate run.
+- **Detect run mode:**
+  - `pmr-pr-changes-requested` present → **revision run**. Claim the ticket
+    (add `pmr-ai-wip`) then skip to [Revision mode](#revision-mode).
+  - `pmr-ai-ready` present, `pmr-pr-changes-requested` absent → **initial run**.
+    Claim the ticket and continue with step 3.
+  - Neither `pmr-ai-ready` nor `pmr-pr-changes-requested` → the ticket hasn't
+    been through the proposal stage. Stop and report via `file_failure_issue`.
+
+**Claim the ticket** (do this once, immediately after the label checks pass,
+before any code or repo work):
+
+```shell
+# Add pmr-ai-wip to signal this run is in progress
+jira -H "Content-Type: application/json" \
+  -X PUT "$JB/rest/api/3/issue/<ISSUE-KEY>" \
+  -d '{"update":{"labels":[{"add":"pmr-ai-wip"}]}}'
+
+# Transition to In Progress so the board reflects active work
+jira -H "Accept: application/json" "$JB/rest/api/3/issue/<ISSUE-KEY>/transitions"
+# Pick the transition ID whose name matches "In Progress" (case-insensitive)
+jira -H "Content-Type: application/json" \
+  -X POST "$JB/rest/api/3/issue/<ISSUE-KEY>/transitions" \
+  -d '{"transition":{"id":"<in-progress-transition-id>"}}'
+```
+
+If the In Progress transition is not found (e.g. ticket is already In Progress),
+skip the transition and continue — do not treat it as a blocker.
+
+**Read the ticket content:**
+
+- Read the full description and every comment — the work to do is described
   there, not inferred from the summary line alone.
 - **Do not self-assign the ticket.** Assignment to `rosa-agent` is expected
   to already be set by whatever triggered this run - never call `PUT
   .../assignee` yourself. If the ticket is assigned to someone else, stop
-  there - note it in the final output and do not touch their ticket; don't
+  there — remove `pmr-ai-wip`, note it in the final output, and exit; don't
   `file_failure_issue` for this, it isn't a failure.
 
 ## 3. Identify the target repository
@@ -246,6 +294,19 @@ triage it and figure out what to unblock, and the work can resume on a later
 run. This is a normal, expected outcome of hitting the edge of what this
 sandbox can reach - not a failure to hide or apologize for.
 
+**After posting the blocker comment, swap labels** so the cron job stops
+retrying this ticket until a human re-queues it:
+
+```shell
+jira -H "Content-Type: application/json" \
+  -X PUT "$JB/rest/api/3/issue/<ISSUE-KEY>" \
+  -d '{"update":{"labels":[{"remove":"pmr-ai-wip"},{"add":"pmr-ai-blocked"}]}}'
+```
+
+A human removes `pmr-ai-blocked` (and re-adds `pmr-ai-ready` or
+`pmr-pr-changes-requested` as appropriate) when the blocker is resolved and
+the ticket is ready to be retried.
+
 ## 11. Open the PR
 
 Push the branch, then open the PR with this skill's attribution label via
@@ -260,11 +321,121 @@ FORK_OWNER=rosa-agent UPSTREAM=<owner>/<repo> \
   bash /sandbox/.claude/skills/github-labels/open-labeled-pr.sh
 ```
 
-## 12. Link back to the ticket
+## 12. Link back to the ticket and signal review-pending
 
 If step 10 didn't already fire for this run: add a Jira remote (web) link on
-the ticket pointing at the new PR (`POST .../remotelink`), and post a short
-comment summarizing what was changed and why.
+the ticket pointing at the new PR (`POST .../remotelink`), post a short
+comment summarizing what was changed and why, then swap labels to signal the
+handoff to `job-pmr-pr-review`:
+
+```shell
+# Replace pmr-ai-wip with pmr-pr-pending
+jira -H "Content-Type: application/json" \
+  -X PUT "$JB/rest/api/3/issue/<ISSUE-KEY>" \
+  -d '{"update":{"labels":[{"remove":"pmr-ai-wip"},{"add":"pmr-pr-pending"}]}}'
+```
+
+`pmr-pr-pending` is what `job-pmr-pr-review` queries for. The swap is atomic
+(single PUT) — the ticket is never in a state where both or neither label
+is present.
+
+## Revision mode
+
+**Entry point:** ticket has `pmr-pr-changes-requested` label (set by
+`job-pmr-pr-review` after detecting a reviewer's CHANGES_REQUESTED state on the
+PR). The `pmr-ai-wip` label is added in step 2 before entering this section.
+
+The PR branch already exists on the fork. The reviewer's feedback is already
+captured as a Jira comment by `job-pmr-pr-review` — your Jira read in step 2
+already loaded it.
+
+### R1. Identify the existing PR
+
+Fetch remote links on the ticket and find the GitHub PR URL:
+
+```shell
+jira -H "Accept: application/json" "$JB/rest/api/3/issue/<KEY>/remotelink"
+# Extract: https://github.com/<owner>/<repo>/pull/<pr-number>
+```
+
+If no PR URL is found, this is a blocker — go to step 10 (blocker comment +
+`pmr-ai-blocked`).
+
+### R2. Re-fetch reviewer feedback from GitHub
+
+Belt-and-suspenders: also fetch directly from GitHub to catch any inline
+comments not captured in the Jira comment:
+
+```shell
+gh api "repos/<owner>/<repo>/pulls/<pr-number>/reviews" \
+  --jq '[.[] | select(.state == "CHANGES_REQUESTED") | {user: .user.login, body, submitted_at}]'
+
+gh api "repos/<owner>/<repo>/pulls/<pr-number>/comments" \
+  --jq '[.[] | {user: .user.login, path, line, body}]'
+```
+
+Merge with the Jira comment you already read. If there is a discrepancy,
+trust GitHub. Build a complete, deduplicated list of every change requested.
+
+### R3. Check out the existing branch
+
+Sync the fork as in step 4, then check out the branch that already exists —
+do not create a new one:
+
+```shell
+FORK=rosa-agent/<repo-name> UPSTREAM=<owner>/<repo> \
+  bash /sandbox/.claude/skills/pmr-action-item/scripts/sync_fork.sh
+
+git checkout "pmr-action-item/<ISSUE-KEY>"
+```
+
+If the branch does not exist on the fork, that is a blocker — go to step 10.
+
+Run the test suite to establish a clean baseline before making any changes.
+
+### R4. Address each piece of reviewer feedback
+
+Work through every CHANGES_REQUESTED item methodically. Read the specific
+file and line the reviewer pointed to. If a suggested fix seems wrong or
+unsafe, that is a blocker — go to step 10. Otherwise implement the change,
+run the tests (must stay green), and commit:
+
+```
+<ISSUE-KEY>: address review: <brief description>
+```
+
+Do not make unrelated changes in this pass.
+
+### R5. Re-run the full security fan-out and code review
+
+Repeat steps 6–9 of the initial run in full against the revised diff. Only
+proceed when both security and code review are clean.
+
+### R6. Push the revision
+
+```shell
+git push origin "pmr-action-item/<ISSUE-KEY>"
+```
+
+Post a PR comment summarising what was addressed, with a bullet per reviewer
+point and confirmation that security fan-out and code review passed.
+
+### R7. Update Jira and flip labels
+
+Post a Jira comment summarising what changed. Then swap labels to re-enter
+the review cycle:
+
+```shell
+jira -H "Content-Type: application/json" \
+  -X PUT "$JB/rest/api/3/issue/<KEY>" \
+  -d '{"update":{"labels":[{"remove":"pmr-ai-wip"},{"remove":"pmr-pr-changes-requested"},{"add":"pmr-pr-pending"}]}}'
+```
+
+`job-pmr-pr-review` now monitors the PR again.
+
+**Revision run complete.** Do not follow steps 3–12 of the initial run.
+
+---
 
 ## Guardrails
 
@@ -277,6 +448,10 @@ comment summarizing what was changed and why.
 - Never retry past a `403` or any other access issue - report the exact
   cause (via a ticket comment if it's ticket-specific per step 10, via
   `file_failure_issue` if it's this job's own mechanics) and stop.
+- Always remove `pmr-ai-wip` before exiting, regardless of outcome — replace
+  it with `pmr-pr-pending` (success), `pmr-ai-blocked` (blocker), or nothing
+  (assigned-to-someone-else skip). Never leave `pmr-ai-wip` on a ticket
+  after the run ends.
 - One ticket, one PR per run.
 
 ## Failures
