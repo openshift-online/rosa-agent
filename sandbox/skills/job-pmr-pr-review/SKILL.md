@@ -83,6 +83,7 @@ Scan for a GitHub PR URL matching `https://github.com/<owner>/<repo>/pull/<numbe
 Use the first match.
 
 If no PR URL is found:
+
 - Post a Jira comment: "job-pmr-pr-review could not find a linked GitHub PR
   on this ticket. Manual triage required."
 - Skip to the next ticket. Do not modify labels — a human needs to investigate.
@@ -236,7 +237,7 @@ commit timestamp against the timestamp of the Jira comment that set the
 `pmr-pr-changes-requested` label (the comment containing the sentinel
 `🤖 PMR PR changes-requested`).
 
-```
+```text
 hours_since_label_set = now - timestamp_of_last_changes_requested_comment
 most_recent_commit_date = latest commit's author date from step 4
 revision_started = most_recent_commit_date > timestamp_of_last_changes_requested_comment
@@ -264,7 +265,7 @@ Applies to tickets from **Query A** where there is no active CHANGES_REQUESTED.
 
 Calculate staleness:
 
-```
+```text
 hours_open = now - pr.created_at
 latest_activity = max(pr.updated_at, most-recent review's submitted_at if any)
 hours_stale = now - latest_activity
@@ -353,7 +354,7 @@ Human escalation needed.
 
 ## 7. Output summary
 
-```
+```text
 job-pmr-pr-review summary:
   Tickets scanned (pending):          N
   Tickets scanned (changes-req):      M
