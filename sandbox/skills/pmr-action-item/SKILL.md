@@ -400,7 +400,7 @@ file and line the reviewer pointed to. If a suggested fix seems wrong or
 unsafe, that is a blocker — go to step 10. Otherwise implement the change,
 run the tests (must stay green), and commit:
 
-```
+```text
 <ISSUE-KEY>: address review: <brief description>
 ```
 
