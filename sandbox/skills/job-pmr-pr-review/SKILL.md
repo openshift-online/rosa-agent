@@ -28,6 +28,7 @@ REST-only `gh api` (GraphQL is blocked).
 | `pmr-ai` | Is a PMR action item | Humans / intake |
 | `pmr-ai-ready` | Proposal approved, ready to implement | `pmr-remediation-analysis` |
 | `pmr-pr-pending` | PR is open, awaiting review | `pmr-action-item` |
+| `pmr-pr-changes-requested` | Reviewer left feedback; agent must revise | This job |
 | `pmr-pr-merged` | PR merged, work complete | This job |
 
 ## 1. Auth setup
@@ -86,11 +87,25 @@ gh api repos/<owner>/<repo>/pulls/<pr-number> \
          requested_teams: [.requested_teams[].slug]}'
 ```
 
-Also fetch the review list to find the latest review activity:
+Also fetch the review list to find the latest review activity and whether any
+reviewer has requested changes:
 
 ```shell
 gh api "repos/<owner>/<repo>/pulls/<pr-number>/reviews" \
-  --jq '[.[] | {user: .user.login, state, submitted_at}]'
+  --jq '[.[] | {user: .user.login, state, submitted_at, body}]'
+```
+
+For each reviewer, only their **most recent** review counts — earlier reviews
+by the same person are superseded. A PR has `CHANGES_REQUESTED` state if any
+reviewer's most-recent review state is `CHANGES_REQUESTED` (and they have not
+subsequently approved).
+
+Also fetch inline review comments (line-level feedback, distinct from top-level
+review bodies):
+
+```shell
+gh api "repos/<owner>/<repo>/pulls/<pr-number>/comments" \
+  --jq '[.[] | {user: .user.login, path, line, body, created_at}]'
 ```
 
 ## 5. Branch on PR state
@@ -144,7 +159,66 @@ When `state == "closed"` and `merged == false`:
 
 3. Skip nudge logic — do not reopen the PR or re-implement.
 
-### 5c. Open (draft or ready)
+### 5c. Open with CHANGES_REQUESTED
+
+When the PR is open and any reviewer's most-recent review state is
+`CHANGES_REQUESTED`:
+
+**Before acting, check for a recent bot comment** (same 24h dedup as step 6)
+with sentinel `🤖 PMR PR changes-requested`. Skip all actions if already
+flagged within the last 24 hours.
+
+1. **Fetch the full review feedback** to pass into Jira context. Build a
+   combined summary of all CHANGES_REQUESTED reviews (top-level body) and
+   all inline comments (file, line, body), grouped by reviewer:
+
+   ```shell
+   # Already fetched in step 4 — reviews list and comments list
+   ```
+
+2. **Post a structured Jira comment** that captures the reviewer feedback
+   verbatim. This is the context-preservation step: `pmr-action-item`'s
+   Step 2 reads all Jira comments, so writing the feedback here means the
+   agent has everything it needs in the ticket without needing to re-query
+   GitHub on its next run.
+
+   The comment should include:
+   - PR URL and title
+   - For each reviewer who left CHANGES_REQUESTED: their login, review body,
+     and any inline comments (file:line → comment body)
+   - A closing line: "Review feedback captured for revision run."
+
+   Use ADF format via the `jira` skill. Plain text is fine for the body
+   content — wrap each reviewer block in a paragraph node.
+
+3. **Swap the Jira label** — replace `pmr-pr-pending` with
+   `pmr-pr-changes-requested`:
+
+   ```shell
+   jira -H "Content-Type: application/json" \
+     -X PUT "$JB/rest/api/3/issue/<KEY>" \
+     -d '{"update":{"labels":[{"remove":"pmr-pr-pending"},{"add":"pmr-pr-changes-requested"}]}}'
+   ```
+
+4. **Post a PR comment** acknowledging that the feedback has been received
+   and a revision run will address it:
+
+   ```shell
+   gh api repos/<owner>/<repo>/issues/<pr-number>/comments \
+     -f body="$(cat <<'EOF'
+   Thanks for the review. This PR was opened by the rosa-agent PMR automation.
+   The requested changes have been logged on the Jira ticket and a revision
+   run will be triggered to address them.
+
+   🤖 PMR PR changes-requested — job-pmr-pr-review
+   EOF
+   )"
+   ```
+
+5. **Do not apply nudge tiers** for this ticket on this run — it is no
+   longer in a "waiting for review" state. Skip to the next ticket.
+
+### 5d. Open (awaiting review or approved, no changes requested)
 
 Calculate staleness:
 
@@ -156,7 +230,7 @@ Calculate staleness:
 
 Apply nudge tiers below.
 
-## 6. Nudge tiers (open PRs only)
+## 6. Nudge tiers (open PRs awaiting review — step 5d only)
 
 Before posting any PR or Jira comment, check for a recent bot comment to
 avoid spamming. Fetch existing PR comments:
@@ -284,15 +358,16 @@ After processing all tickets, log:
 
 ```
 job-pmr-pr-review summary:
-  Tickets scanned:   N
-  Merged (closed):   K
-  Closed no-merge:   J
-  Tier 0 (too new):  P
-  Tier 1 nudged:     Q
-  Tier 2 escalated:  R
-  Tier 3 escalated:  S
-  Deduped (skipped): D
-  Errors:            E
+  Tickets scanned:        N
+  Merged (closed):        K
+  Closed no-merge:        J
+  Changes requested:      X
+  Tier 0 (too new):       P
+  Tier 1 nudged:          Q
+  Tier 2 escalated:       R
+  Tier 3 escalated:       S
+  Deduped (skipped):      D
+  Errors:                 E
 ```
 
 ## On any failure
@@ -331,7 +406,8 @@ A run that finds **no tickets** with `pmr-pr-pending` is NOT a failure.
 
 ## Related
 
-- **`pmr-action-item`**: Opens the PR and sets `pmr-pr-pending` (Stage 6)
+- **`pmr-action-item`**: Opens the PR (sets `pmr-pr-pending`) and handles
+  revision runs when this job sets `pmr-pr-changes-requested` (Stage 6)
 - **`pmr-remediation-analysis`**: Sets `pmr-ai-ready` (Stage 2)
 - **MCS-1516**: Design ticket for this job
 - **MCS-46**: PMR action pipeline (parent epic)
