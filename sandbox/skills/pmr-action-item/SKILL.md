@@ -260,11 +260,24 @@ FORK_OWNER=rosa-agent UPSTREAM=<owner>/<repo> \
   bash /sandbox/.claude/skills/github-labels/open-labeled-pr.sh
 ```
 
-## 12. Link back to the ticket
+## 12. Link back to the ticket and signal review-pending
 
 If step 10 didn't already fire for this run: add a Jira remote (web) link on
-the ticket pointing at the new PR (`POST .../remotelink`), and post a short
-comment summarizing what was changed and why.
+the ticket pointing at the new PR (`POST .../remotelink`), post a short
+comment summarizing what was changed and why, then add the `pmr-pr-pending`
+label to signal that the PR is open and awaiting review.
+
+The `pmr-pr-pending` label is the handoff to the `job-pmr-pr-review` cron job,
+which monitors open PRs and nudges reviewers when they stall. Add it only
+after the PR URL is confirmed open — never add it if this run ends in a
+blocker comment (step 10).
+
+```shell
+# After adding the remotelink and comment:
+jira -H "Content-Type: application/json" \
+  -X PUT "$JB/rest/api/3/issue/<ISSUE-KEY>" \
+  -d '{"update":{"labels":[{"add":"pmr-pr-pending"}]}}'
+```
 
 ## Guardrails
 
