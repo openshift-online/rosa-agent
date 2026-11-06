@@ -1,6 +1,6 @@
 ---
 name: pmr-action-item
-description: Investigate and resolve a PMR (Post-Mortem Review) action-item Jira ticket (labels pmr-ai and pmr-ai-ready) assigned to the rosa-agent user - read the ticket, claim it with pmr-ai-wip, transition to In Progress, fork the repo, implement on a feature branch, run security review, then critical code review with a different model, implement review findings, re-run security check, and open a PR. Also handles revision runs when job-pmr-pr-review sets pmr-pr-changes-requested after a reviewer requests changes. Sets pmr-ai-blocked when hitting an unresolvable blocker so cron jobs stop retrying. Built for per-ticket invocation (one issue key per run). Trigger keywords - PMR, PMR action item, pmr-ai-ready, pmr-pr-changes-requested, post-mortem action item, investigate ticket, action item ticket, address review feedback.
+description: Investigate and resolve a PMR (Post-Mortem Review) action-item Jira ticket (labels pmr-ai and pmr-ai-ready) assigned to the rosa-agent user - read the ticket, claim it with pmr-ai-wip, transition to In Progress, fork the repo, implement on a feature branch, run security review, then critical code review with a different model, implement review findings, re-run security check, and open a PR. Also handles revision runs (pmr-pr-changes-requested) when a reviewer requests changes, and CI-fix runs (pmr-pr-ci-failing) when job-pmr-pr-review confirms a real CI failure after retest. Sets pmr-ai-blocked when hitting an unresolvable blocker so cron jobs stop retrying. Built for per-ticket invocation (one issue key per run). Trigger keywords - PMR, PMR action item, pmr-ai-ready, pmr-pr-changes-requested, pmr-pr-ci-failing, post-mortem action item, investigate ticket, action item ticket, address review feedback, fix CI failure.
 ---
 
 # PMR action item: investigate a ticket, fix it, PR it
@@ -13,13 +13,15 @@ ticket end to end. A future enumerator/CronJob could discover every open
 (mirroring how `job-image-vuln-check` fans out over its target list), but
 that enumeration is out of scope here.
 
-This skill runs in two modes, detected automatically in step 2:
+This skill runs in three modes, detected automatically in step 2:
 
-- **Initial run** (`pmr-ai-ready` label present, no `pmr-pr-changes-requested`):
-  fresh implementation on a new branch ending with an open PR.
-- **Revision run** (`pmr-pr-changes-requested` label present): a reviewer
-  requested changes on an existing PR. The agent returns to the branch,
-  addresses each piece of feedback, and re-enters the review cycle.
+- **Initial run** (`pmr-ai-ready` label, no other mode labels): fresh
+  implementation on a new branch ending with an open PR.
+- **Revision run** (`pmr-pr-changes-requested`): a reviewer requested changes.
+  The agent returns to the branch, addresses feedback, re-enters review cycle.
+- **CI-fix run** (`pmr-pr-ci-failing`): job-pmr-pr-review confirmed a real CI
+  failure after retest. The agent checks out the existing branch, reads the
+  failure log, fixes the code, and pushes.
 
 **Label protocol for this skill:**
 
@@ -27,6 +29,7 @@ This skill runs in two modes, detected automatically in step 2:
 |---|---|---|
 | `pmr-ai-wip` | Run in progress; skip on cron re-fire | This skill (step 2) |
 | `pmr-ai-blocked` | Unresolvable blocker; human must re-queue | This skill (step 10) |
+| `pmr-pr-ci-failing` | CI confirmed failing; fix run in progress | This skill removes it (CI-fix mode) |
 | `pmr-pr-pending` | PR open, awaiting review | This skill (step 12) |
 
 **The `pmr-ai-ready` label indicates:**
@@ -82,10 +85,12 @@ and run its auth-detection block once. Then:
 - **Detect run mode:**
   - `pmr-pr-changes-requested` present → **revision run**. Claim the ticket
     (add `pmr-ai-wip`) then skip to [Revision mode](#revision-mode).
-  - `pmr-ai-ready` present, `pmr-pr-changes-requested` absent → **initial run**.
+  - `pmr-pr-ci-failing` present → **CI-fix run**. Claim the ticket
+    (add `pmr-ai-wip`) then skip to [CI-fix mode](#ci-fix-mode).
+  - `pmr-ai-ready` present, neither mode label present → **initial run**.
     Claim the ticket and continue with step 3.
-  - Neither `pmr-ai-ready` nor `pmr-pr-changes-requested` → the ticket hasn't
-    been through the proposal stage. Stop and report via `file_failure_issue`.
+  - None of the above → the ticket hasn't been through the proposal stage.
+    Stop and report via `file_failure_issue`.
 
 **Claim the ticket** (do this once, immediately after the label checks pass,
 before any code or repo work):
@@ -437,6 +442,152 @@ jira -H "Content-Type: application/json" \
 
 ---
 
+## CI-fix mode
+
+**Entry point:** ticket has `pmr-pr-ci-failing` label (set by
+`job-pmr-pr-review` after confirming a real CI failure post-retest). The
+`pmr-ai-wip` label is added in step 2 before entering this section.
+`pmr-pr-pending` remains on the ticket alongside `pmr-pr-ci-failing` — both
+labels coexist during the fix run.
+
+The PR branch already exists on the fork. The failure log is already captured
+as a Jira comment by `job-pmr-pr-review` — your Jira read in step 2 loaded it.
+
+### CI1. Identify the existing PR
+
+Fetch remote links on the ticket and find the GitHub PR URL (same as R1 in
+revision mode). If no PR URL is found, that is a blocker — step 10.
+
+### CI2. Re-fetch the failure log fresh from the CI system
+
+Belt-and-suspenders: re-fetch the log directly to ensure you have the latest
+run's output (the Jira comment may have captured an earlier run).
+
+Determine the CI system from the failing check run's `details_url`:
+
+**Prow** (`details_url` matches `prow.ci.openshift.org/view/gs/<bucket>/<path>/<job_name>/<job_id>`):
+
+Extract `job_name` and `job_id` from the URL path, then:
+
+```shell
+curl -sS "https://prow.ci.openshift.org/log?job=<job_name>&id=<job_id>"
+```
+
+To find the most recent failing check run's `details_url`, fetch check runs
+for the PR's head SHA:
+
+```shell
+gh api "repos/<owner>/<repo>/commits/<head_sha>/check-runs?per_page=100" \
+  --jq '[.check_runs[] | select(.conclusion == "failure" or .conclusion == "error") | {name, details_url}]'
+```
+
+**GitHub Actions** (`details_url` matches `github.com/<owner>/<repo>/actions/runs/<run_id>`):
+
+```shell
+# Get the failing job ID for the run
+gh api "repos/<owner>/<repo>/actions/runs/<run_id>/jobs" \
+  --jq '[.jobs[] | select(.conclusion == "failure") | {id, name}]'
+
+# Fetch the log for that job (returns plain text)
+gh api repos/<owner>/<repo>/actions/jobs/<job_id>/logs
+```
+
+Truncate log to the **last 200 lines** — the error is always at the tail.
+Merge with the Jira comment you already read. If there is a discrepancy,
+trust the freshly-fetched log.
+
+### CI3. Diagnose the failure type
+
+Classify the failure before writing any code:
+
+- **Lint / style** (markdownlint, golangci-lint, shellcheck): the error message
+  names exact files and line numbers. Fix only the flagged lines.
+- **Test failure** (unit/integration): identify the failing test name and the
+  assertion that failed. Read the relevant test file and the code under test.
+- **Build failure** (compile error, missing dependency): read the error and
+  locate the import or syntax issue.
+- **Infrastructure / transient** (OOM, network timeout, pod eviction): these
+  are not fixable by code change. Treat as a blocker — step 10. Do not push
+  a spurious commit.
+
+If the failure type is ambiguous, treat as a blocker.
+
+### CI4. Check out the existing branch
+
+Sync the fork as in step 4 of the initial run, then check out the branch that
+already exists — do not create a new one:
+
+```shell
+FORK=rosa-agent/<repo-name> UPSTREAM=<owner>/<repo> \
+  bash /sandbox/.claude/skills/pmr-action-item/scripts/sync_fork.sh
+
+git checkout "pmr-action-item/<ISSUE-KEY>"
+```
+
+If the branch does not exist on the fork, that is a blocker — step 10.
+
+### CI5. Fix the failure
+
+Apply the minimal fix that resolves the diagnosed failure. Run the target
+repo's local equivalent of the failing check (e.g. `make lint`, `go test ./...`,
+`markdownlint-cli2 "**/*.md"`) before and after to verify the fix is real.
+
+Do not make changes unrelated to the CI failure. Commit:
+
+```text
+<ISSUE-KEY>: fix CI: <brief description of what failed and what changed>
+```
+
+### CI6. Re-run security fan-out and code review
+
+Same as steps 6–9 of the initial run — mandatory even for lint/style fixes,
+since any pushed commit goes through the same review gate. Only proceed when
+both passes are clean.
+
+### CI7. Push and update the ticket
+
+Push the fix commit:
+
+```shell
+git push origin "pmr-action-item/<ISSUE-KEY>"
+```
+
+Post a PR comment summarising the failure and what was fixed:
+
+```shell
+gh api repos/<owner>/<repo>/issues/<pr-number>/comments \
+  -f body="CI failure fixed and pushed.
+
+**Failure:** <check name> — <one-line summary of what failed>
+**Fix:** <what was changed and why>
+
+Security fan-out and independent code review passed on the updated diff.
+
+🤖 pmr-action-item CI-fix run"
+```
+
+Post a Jira comment with the same summary.
+
+Remove `pmr-pr-ci-failing` and `pmr-ai-wip`; `pmr-pr-pending` stays so
+`job-pmr-pr-review` continues monitoring the PR:
+
+```shell
+jira -H "Content-Type: application/json" \
+  -X PUT "$JB/rest/api/3/issue/<KEY>" \
+  -d '{"update":{"labels":[{"remove":"pmr-ai-wip"},{"remove":"pmr-pr-ci-failing"}]}}'
+```
+
+### CI-fix cycle limit
+
+Count prior Jira comments on this ticket containing the sentinel
+`🤖 pmr-action-item CI-fix run`. After **3 fix attempts**, treat the
+failure as an unresolvable blocker: comment on the ticket, set
+`pmr-ai-blocked`, and stop. Do not push a fourth fix attempt.
+
+**CI-fix run complete.** Do not follow steps 3–12 of the initial run.
+
+---
+
 ## Guardrails
 
 - Never force-push, and never force a fork-sync past a divergence.
@@ -449,9 +600,13 @@ jira -H "Content-Type: application/json" \
   cause (via a ticket comment if it's ticket-specific per step 10, via
   `file_failure_issue` if it's this job's own mechanics) and stop.
 - Always remove `pmr-ai-wip` before exiting, regardless of outcome — replace
-  it with `pmr-pr-pending` (success), `pmr-ai-blocked` (blocker), or nothing
-  (assigned-to-someone-else skip). Never leave `pmr-ai-wip` on a ticket
-  after the run ends.
+  it with `pmr-pr-pending` (initial run success), `pmr-ai-blocked` (blocker),
+  or nothing (assigned-to-someone-else skip). In revision/CI-fix runs, remove
+  `pmr-ai-wip` alongside the mode label (`pmr-pr-changes-requested` or
+  `pmr-pr-ci-failing`). Never leave `pmr-ai-wip` on a ticket after the run ends.
+- Never push a CI fix for an infrastructure failure (OOM, network timeout,
+  pod eviction) — these are not code problems and a spurious commit makes
+  the PR history harder to read.
 - One ticket, one PR per run.
 
 ## Failures

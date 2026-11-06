@@ -1,6 +1,6 @@
 ---
 name: job-pmr-pr-review
-description: Scheduled job that scans Jira for PMR action-item tickets labeled pmr-pr-pending (PR open, awaiting review) and pmr-pr-changes-requested (revision run needed), checks each linked GitHub PR via REST, and takes tiered action. For pending PRs: no action under 48h; PR comment + Jira status comment at 48h-7 days; CODEOWNERS review request + urgent comment at 7-14 days; failure issue at 14+ days. For stalled revision PRs (pmr-pr-changes-requested with no new commits): same tiers. Detects CHANGES_REQUESTED reviewer state, captures feedback into Jira for context, and swaps pmr-pr-pending to pmr-pr-changes-requested. Enforces a 3-cycle revision limit and sets pmr-ai-blocked on breach. Closes out tickets when PRs merge. Use when asked to run the PMR PR review job, check for stalled PMR PRs, or when triggered by a cron/scheduled invocation. Trigger keywords - pmr-pr-pending, pmr-pr-changes-requested, stalled PMR PR, PR review nudge, job-pmr-pr-review.
+description: Scheduled job that scans Jira for PMR action-item tickets labeled pmr-pr-pending (PR open, awaiting review) and pmr-pr-changes-requested (revision run needed), checks each linked GitHub PR via REST, and takes tiered action. For pending PRs: no action under 48h; PR comment + Jira status comment at 48h-7 days; CODEOWNERS review request + urgent comment at 7-14 days; failure issue at 14+ days. For stalled revision PRs (pmr-pr-changes-requested with no new commits): same tiers. Detects CHANGES_REQUESTED reviewer state, captures feedback into Jira for context, and swaps pmr-pr-pending to pmr-pr-changes-requested. Enforces a 3-cycle revision limit and sets pmr-ai-blocked on breach. Detects failing CI check runs: retests once first (flaky test guard), then on confirmed failure fetches the log via Prow Deck or GitHub Actions API, captures it into Jira, and sets pmr-pr-ci-failing for pmr-action-item to fix. Closes out tickets when PRs merge. Use when asked to run the PMR PR review job, check for stalled PMR PRs, or when triggered by a cron/scheduled invocation. Trigger keywords - pmr-pr-pending, pmr-pr-changes-requested, pmr-pr-ci-failing, stalled PMR PR, CI failure, PR review nudge, job-pmr-pr-review.
 ---
 
 # Job: nudge reviewers on stalled PMR action-item PRs
@@ -28,6 +28,7 @@ REST-only `gh api` (GraphQL is blocked).
 | `pmr-ai-blocked` | Unresolvable blocker or revision limit hit; human must re-queue | `pmr-action-item` / this job |
 | `pmr-pr-pending` | PR open, awaiting review | `pmr-action-item` |
 | `pmr-pr-changes-requested` | Reviewer left feedback; agent must revise | This job |
+| `pmr-pr-ci-failing` | CI confirmed failing after retest; needs code fix | This job |
 | `pmr-pr-merged` | PR merged, work complete | This job |
 
 ## 1. Auth setup
@@ -95,7 +96,7 @@ Parse `<owner>`, `<repo>`, and `<pr-number>` from the PR URL, then:
 ```shell
 gh api repos/<owner>/<repo>/pulls/<pr-number> \
   --jq '{state, merged, merged_at, created_at, updated_at,
-         title, html_url, draft,
+         title, html_url, draft, head_sha: .head.sha,
          requested_reviewers: [.requested_reviewers[].login],
          requested_teams: [.requested_teams[].slug]}'
 ```
@@ -119,12 +120,24 @@ gh api "repos/<owner>/<repo>/pulls/<pr-number>/comments" \
   --jq '[.[] | {user: .user.login, path, line, body, created_at}]'
 ```
 
-Also fetch the commit list to detect revision activity (used in step 5e):
+Also fetch the commit list to detect revision activity (used in step 5d):
 
 ```shell
 gh api "repos/<owner>/<repo>/pulls/<pr-number>/commits" \
   --jq '[.[] | {sha: .sha[:8], date: .commit.author.date}]'
 ```
+
+Also fetch check runs for the PR's head SHA — used in step 5f to detect CI
+failures:
+
+```shell
+gh api "repos/<owner>/<repo>/commits/<head_sha>/check-runs?per_page=100" \
+  --jq '[.check_runs[] | {id, name, status, conclusion, details_url, app_slug: .app.slug}]'
+```
+
+A check run is a **confirmed failure** if `conclusion` is `"failure"` or
+`"error"` and `status` is `"completed"`. Ignore check runs that are still
+`in_progress` or `queued`.
 
 ## 5. Branch on PR state
 
@@ -259,9 +272,130 @@ stalled. Apply the same tiered escalation as step 6 (nudge tiers), using
 Use the sentinel `🤖 PMR PR review nudge (revision stalled)` for dedup
 checks on this path.
 
-### 5e. Open, no CHANGES_REQUESTED (awaiting initial review)
+### 5f. Open with failing CI check runs
 
-Applies to tickets from **Query A** where there is no active CHANGES_REQUESTED.
+Applies to tickets from **Query A** (`pmr-pr-pending`) that are open, have no
+active CHANGES_REQUESTED (would have been caught by 5c), and have one or more
+completed-failed check runs from step 4.
+
+Skip this step if `pmr-pr-ci-failing` is already on the ticket — that means
+a fix run has already been triggered and `pmr-action-item` is handling it.
+
+**Check for a prior retest comment** by this bot on the PR — fetch PR comments
+and look for the sentinel `🤖 PMR CI retest triggered` posted by `rosa-agent`:
+
+```shell
+gh api "repos/<owner>/<repo>/issues/<pr-number>/comments" \
+  --jq '[.[] | select(.user.login == "rosa-agent") | {created_at, body}]'
+```
+
+**Case A — No prior retest comment (first time seeing this failure):**
+
+Trigger a retest. Determine check runner type from the failing check run's
+`details_url`:
+
+- **Prow** (`details_url` contains `prow.ci.openshift.org`): post a `/retest`
+  comment on the PR. Prow bot picks this up and re-runs all failed jobs.
+
+  ```shell
+  gh api repos/<owner>/<repo>/issues/<pr-number>/comments \
+    -f body="/retest"
+  ```
+
+- **GitHub Actions** (`details_url` is a `github.com/...` URL): use the
+  re-run API. Parse the `run_id` from `details_url`, then:
+
+  ```shell
+  gh api repos/<owner>/<repo>/actions/runs/<run_id>/rerun-failed-jobs -X POST
+  ```
+
+After triggering, post a PR comment and a Jira comment so the state is
+recorded:
+
+```shell
+# PR comment
+gh api repos/<owner>/<repo>/issues/<pr-number>/comments \
+  -f body="CI failure detected on this PMR automation PR. Triggering a retest to rule out flakiness before attempting a code fix.
+
+Failing checks:
+$(for each failing check: - <name>)
+
+🤖 PMR CI retest triggered — job-pmr-pr-review"
+```
+
+```shell
+# Jira comment (ADF)
+# "CI failure detected on PR <URL>. Retest triggered for: <check names>.
+#  If still failing on next run, failure log will be captured and a fix attempted."
+```
+
+Do not set any label yet. Skip remaining steps for this ticket this run.
+
+**Case B — Prior retest comment exists AND checks are still failing:**
+
+This is a confirmed real failure (not flaky). Now fetch the failure log.
+
+**For Prow jobs** — parse `job_name` and `job_id` from `details_url`:
+
+```text
+https://prow.ci.openshift.org/view/gs/<bucket>/pr-logs/pull/<org_repo>/<pr>/<job_name>/<job_id>
+```
+
+Fetch the log:
+
+```shell
+curl -sS "https://prow.ci.openshift.org/log?job=<job_name>&id=<job_id>"
+```
+
+**For GitHub Actions jobs** — fetch via the jobs API (returns plain text, no
+zip extraction needed):
+
+```shell
+gh api repos/<owner>/<repo>/actions/jobs/<job_id>/logs
+```
+
+Truncate log output to the last 200 lines if it exceeds that — the tail
+contains the actual error.
+
+**Capture the failure into Jira** (context preservation for the fix run, same
+pattern as CHANGES_REQUESTED feedback):
+
+Post an ADF Jira comment containing:
+- PR URL and failing check names
+- Truncated log tail (last 200 lines, in a code block)
+- Closing line: "CI failure log captured for fix run.
+  🤖 PMR CI retest triggered — job-pmr-pr-review"
+
+**Set the label:**
+
+```shell
+jira -H "Content-Type: application/json" \
+  -X PUT "$JB/rest/api/3/issue/<KEY>" \
+  -d '{"update":{"labels":[{"add":"pmr-pr-ci-failing"}]}}'
+```
+
+Note: `pmr-pr-pending` stays on the ticket — the CI fix is an additional
+state, not a replacement. `pmr-action-item`'s CI-fix mode will remove
+`pmr-pr-ci-failing` and leave `pmr-pr-pending` when it pushes a fix.
+
+**Post a PR comment** noting that the failure is confirmed and a fix run
+will be triggered:
+
+```shell
+gh api repos/<owner>/<repo>/issues/<pr-number>/comments \
+  -f body="CI failure confirmed after retest. The failure log has been captured on the Jira ticket and an automated fix run will be triggered.
+
+🤖 PMR CI retest triggered — job-pmr-pr-review"
+```
+
+**Case C — Prior retest comment exists AND checks are now green:**
+
+The failure was flaky. No code fix needed. No action — skip this ticket.
+
+### 5g. Open, CI green, no CHANGES_REQUESTED (awaiting initial review)
+
+Applies to tickets from **Query A** where there is no active CHANGES_REQUESTED
+and all check runs are green (or none have completed yet).
 
 Calculate staleness:
 
@@ -273,7 +407,7 @@ hours_stale = now - latest_activity
 
 Apply nudge tiers in step 6.
 
-## 6. Nudge tiers (steps 5d and 5e)
+## 6. Nudge tiers (steps 5d and 5g)
 
 Before posting any PR or Jira comment, check for a recent bot comment to
 avoid spamming. Fetch existing PR comments:
@@ -363,6 +497,9 @@ job-pmr-pr-review summary:
   Changes-requested flagged:          X
   Revision limit hit (blocked):       L
   Revision stalled — nudged:          Y
+  CI retest triggered:                C
+  CI failure confirmed (fix queued):  F
+  CI was flaky (resolved):            G
   Tier 0 (too new):                   P
   Tier 1 nudged:                      Q
   Tier 2 escalated:                   R
@@ -398,6 +535,11 @@ Then stop. Never retry around a failure. A run finding no tickets is NOT a failu
 - Never remove `pmr-pr-pending` unless the PR is merged, closed, or has
   active CHANGES_REQUESTED. Never remove `pmr-pr-changes-requested` unless
   merged, closed, or revision limit hit.
+- `pmr-pr-ci-failing` is added alongside `pmr-pr-pending` (not instead of it)
+  — both labels coexist while the fix run is in progress. `pmr-action-item`
+  removes `pmr-pr-ci-failing` when it pushes the fix.
+- Never attempt a CI fix if `pmr-pr-ci-failing` is already on the ticket —
+  a fix run is already in flight.
 - Never nudge a PR more than once per 24 hours (the dedup checks in steps 5c
   and 6).
 - Revision limit is 3 cycles — do not raise it without updating this skill.
