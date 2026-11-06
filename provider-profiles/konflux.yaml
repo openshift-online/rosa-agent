@@ -1,0 +1,46 @@
+# Capability profile: Konflux CI pipeline console (anonymous, read-only).
+#
+# Replaces the konflux block that was in policies/default.yaml (plan 0014).
+# Kept as its own provider, separate from ro-ci_pipelines, so it can be
+# attached or detached independently. Its host patterns are the broadest of
+# any uncredentialed grant; keeping it separate makes detachment cheap.
+#
+# No credential — a provider of this type can be created with no credential value.
+#
+# Import:
+#   openshell -g <gateway> profile lint   --file provider-profiles/konflux.yaml
+#   openshell -g <gateway> profile import --file provider-profiles/konflux.yaml --global
+#
+# Create the provider (credential-less):
+#   openshell -g <gateway> provider create --name ro-konflux \
+#       --type konflux --global-profile
+#
+# Attach to: interactive sessions as an opt-in. No scheduled job references
+# Konflux — the only mentions in sandbox/ say crons are not deployed via it.
+#
+# Follow-up tightening (not blocking): replace each **.<cluster> wildcard with
+# the exact console and API hostnames actually used. As written, the rule
+# reaches every route on those shared clusters, including other tenants' apps.
+
+id: konflux
+display_name: Konflux CI pipeline console (anonymous, read-only)
+description: Konflux PipelineRun console and API hosts for interactive sessions (anonymous, read-only)
+category: data
+endpoints:
+  - host: "**.stone-prd-rh01.pg1f.p1.openshiftapps.com"
+    port: 443
+    protocol: rest
+    access: read-only
+    enforcement: enforce
+  - host: "**.kflux-prd-rh02.0fk9.p1.openshiftapps.com"
+    port: 443
+    protocol: rest
+    access: read-only
+    enforcement: enforce
+  - host: "**.kflux-prd-rh03.nnv1.p1.openshiftapps.com"
+    port: 443
+    protocol: rest
+    access: read-only
+    enforcement: enforce
+binaries: [/usr/bin/curl, /usr/bin/claude]
+inference_capable: false

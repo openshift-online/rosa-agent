@@ -1,0 +1,22 @@
+apiVersion: openshell.managed.openshift.io/v1alpha1
+kind: Sandbox
+metadata:
+  name: ${NAME}
+spec:
+  autoProviders: false
+  image: quay.io/redhat-services-prod/rosa-tenant/rosa-agent/rosa-agent:latest
+  command:
+    - claude
+    - --dangerously-skip-permissions
+    - --print
+    - ${PROMPT}
+  providerRefs:
+    - name: rosa-agent-vertex
+    - name: rosa-agent-github
+    - name: ro-go_modules
+    - name: ro-image_inspect
+    - name: ro-redhat_errata
+  sessionOpts:
+    approvalMode: auto
+    noKeep: true
+  tty: true

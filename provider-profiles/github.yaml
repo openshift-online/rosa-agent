@@ -9,37 +9,19 @@
 #   1. binaries is narrowed, not corrected. Upstream lists
 #      [/usr/bin/gh, /usr/local/bin/gh, /usr/bin/git, /usr/local/bin/git] to
 #      cover several image layouts. Here gh exists only at /usr/local/bin/gh
-#      and git only at /usr/bin/git, so the other two are dropped, and
-#      /usr/bin/claude is added because Claude Code reaches the GitHub API
-#      itself -- policies/default.yaml lists it for the same reason. binaries
+#      and git only at /usr/bin/git, so the other two are dropped. binaries
 #      matches on exact path and decides which processes may reach these
 #      endpoints, so a path absent from the image denies silently rather than
 #      failing loudly.
 #
-#   2. api.github.com is read-write, not upstream's read-only. rosa-agent
-#      creates forks, pull requests, issues and labels through fixed
-#      `gh api -X POST` calls (see sandbox/skills/github-labels/
-#      open-labeled-pr.sh), all of which the read-only preset blocks.
+#   2. api.github.com uses explicit allow rules, not a read-write preset.
+#      With the base policy empty (plan 0014) this profile is now the only
+#      GitHub grant. Explicit rules replace the coarse read-write block so
+#      that the allow list means exactly what it says — no hidden write paths.
 #
-#   3. github.com allows POST to */git-receive-pack, which upstream omits.
-#      The agent genuinely pushes: scripts/sync_fork.sh runs `git push origin`
-#      as the first step of both job-image-vuln-check and pmr-action-item, and
-#      job-sop-improve pushes a branch before opening its PR.
-#
-# Neither 2 nor 3 widens the sandbox. policies/default.yaml already grants
-# api.github.com and github.com read-write for these same binaries, and L7
-# authorization is a union across every matching rule -- any single allow
-# admits the request. The effective permission is unchanged; what changes is
-# that this profile now states what it depends on instead of silently relying
-# on the baked policy to permit it, so it keeps working if that policy is
-# tightened.
-#
-# The corollary matters more than the deltas: a profile can restate or widen
-# what the policy allows, but it cannot narrow it. An earlier version of this
-# comment claimed push was denied because this profile omitted receive-pack.
-# That was never true in a sandbox carrying the baked policy, which allows
-# POST ** on github.com. A real restriction needs an explicit deny, or a
-# narrower rule in policies/default.yaml itself.
+#   3. github.com allows POST only to /rosa-agent/*/git-receive-pack.
+#      The agent pushes only to its own fork namespace; allowing receive-pack
+#      on ** would permit pushing to any repo the token can reach.
 #
 # Lint and import. `openshell provider profile ...` also works -- it is a
 # registered alias for `openshell profile ...` -- but the short form is the
@@ -81,14 +63,33 @@ credentials:
 discovery:
   credentials: [api_token]
 endpoints:
-  # REST API. read-write because the agent creates forks, PRs, issues and
-  # labels; see the header note.
+  # REST API — explicit writes only. With the base policy empty (plan 0014)
+  # this is now the sole GitHub grant. A read-write preset here would allow
+  # POST/PUT/PATCH on any path; the rules below restrict to only the
+  # operations the agent actually performs.
   - host: api.github.com
     port: 443
     protocol: rest
-    access: read-write
     enforcement: enforce
-  # GraphQL stays read-only: nothing in this repo issues a GraphQL mutation.
+    rules:
+      # Reads — all REST GET/HEAD/OPTIONS paths
+      - allow: { method: GET,     path: "/**" }
+      - allow: { method: HEAD,    path: "/**" }
+      - allow: { method: OPTIONS, path: "/**" }
+      # Fork
+      - allow: { method: POST,   path: "/repos/*/*/forks" }
+      # Pull requests
+      - allow: { method: POST,   path: "/repos/*/*/pulls" }
+      - allow: { method: PATCH,  path: "/repos/*/*/pulls/*" }
+      # Issues
+      - allow: { method: POST,   path: "/repos/*/*/issues" }
+      - allow: { method: POST,   path: "/repos/*/*/issues/*/comments" }
+      # Labels
+      - allow: { method: POST,   path: "/repos/*/*/labels" }
+      - allow: { method: POST,   path: "/repos/*/*/issues/*/labels" }
+  # GraphQL: read-only enforced at protocol level. gh pr create and gh issue
+  # create use GraphQL mutations, which this read-only endpoint denies — use
+  # gh api -X POST REST calls instead. Pure gh api calls go through the REST block.
   - host: api.github.com
     port: 443
     path: /graphql
@@ -98,20 +99,20 @@ endpoints:
   # Git transport. Smart HTTP tunnels both directions over POST, which the
   # read-only preset blocks, so the two service endpoints are named
   # explicitly rather than taking a blanket read-write.
-  #   git-upload-pack  -> clone and fetch
-  #   git-receive-pack -> push
-  # Both are required; see delta 3 in the header. Spelling them out keeps any
-  # other POST to github.com denied, which a read-write preset would not.
+  #   git-upload-pack  -> clone and fetch (any repo the token can read)
+  #   git-receive-pack -> push, scoped to the bot's own fork namespace only
   - host: github.com
     port: 443
     protocol: rest
     enforcement: enforce
     rules:
-      - allow: { method: GET, path: "**" }
-      - allow: { method: HEAD, path: "**" }
-      - allow: { method: OPTIONS, path: "**" }
-      - allow: { method: POST, path: "/**/git-upload-pack" }
-      - allow: { method: POST, path: "/**/git-receive-pack" }
+      - allow: { method: GET,     path: "/**" }
+      - allow: { method: HEAD,    path: "/**" }
+      - allow: { method: OPTIONS, path: "/**" }
+      - allow: { method: POST,    path: "/**/git-upload-pack" }
+      # Push only to rosa-agent's own fork namespace. * matches exactly one
+      # path segment (repo name). rosa-agent/org/repo would need ** and is denied.
+      - allow: { method: POST,    path: "/rosa-agent/*/git-receive-pack" }
   # Clone redirects here for pack data. Read-only; no POST needed.
   - host: codeload.github.com
     port: 443
@@ -119,7 +120,7 @@ endpoints:
     access: read-only
     enforcement: enforce
 # Profile-level: this list applies to every endpoint above, so it is kept to
-# the three binaries that actually reach GitHub. curl is deliberately absent
-# -- the asset and Actions hosts it needs stay in policies/default.yaml,
+# the binaries that actually reach GitHub. curl is deliberately absent —
+# the asset and Actions hosts it needs are in provider-profiles/ci-pipelines.yaml,
 # because adding curl here would also grant it api.github.com and github.com.
 binaries: [/usr/local/bin/gh, /usr/bin/git, /usr/bin/claude]
