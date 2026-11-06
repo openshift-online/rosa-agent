@@ -361,6 +361,7 @@ contains the actual error.
 pattern as CHANGES_REQUESTED feedback):
 
 Post an ADF Jira comment containing:
+
 - PR URL and failing check names
 - Truncated log tail (last 200 lines, in a code block)
 - Closing line: "CI failure log captured for fix run.
