@@ -26,7 +26,8 @@ Done must never be handed to this skill — the status transition in step 2b is 
 distributed lock that makes this work across concurrent runs.
 
 Example enumerator JQL:
-```
+
+```text
 labels = "pmr-ai" AND labels = "pmr-ai-ready" AND assignee = "<rosa-agent accountId>"
   AND statusCategory = "To Do" ORDER BY created ASC
 ```
@@ -125,6 +126,7 @@ jira -H "Content-Type: application/json" \
 ```
 
 **Interpret the response by status:**
+
 - **2xx** → transition succeeded; continue.
 - **400 or 409** → likely a workflow constraint or race (the ticket left "To Do"
   before this POST arrived). Stop quietly; do not call `file_failure_issue` —
@@ -355,6 +357,7 @@ Ask it to assess:
    does the implementation deliver that (not a workaround)?
 
 The reviewer must return structured findings with:
+
 - **Severity**: CRITICAL (blocks PR), IMPORTANT (should fix), MINOR (noted only)
 - **Proposal section** the finding relates to (Failure Mechanism / Proposed
   Change / Verification / Scope)
