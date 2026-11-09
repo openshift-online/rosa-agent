@@ -1,6 +1,6 @@
 # PMR Action Item Job
 
-Automated processing of PMR (Post-Mortem Review) action items labeled `PMR-AI-PILOT` in Jira.
+Automated processing of PMR (Post-Mortem Review) action items labeled `pmr-ai` and `pmr-ai-ready` in Jira.
 
 ## Architecture
 
@@ -14,8 +14,9 @@ Two-tier job pattern:
 
 The enumerator:
 
-1. Queries Jira for open PMR-AI-PILOT tickets assigned to `rosa-agent`
-   - JQL: `project = ROSAENG AND labels = PMR-AI-PILOT AND assignee = rosa-agent AND status not in (Done, Closed, Resolved)`
+1. Queries Jira for open `pmr-ai-ready` tickets assigned to `rosa-agent`
+   - See `SKILL.md` for the authoritative enumerator JQL — that file is the
+     single source of truth; do not duplicate it here.
 2. Creates one Kubernetes Job per ticket found
 3. Exits (worker Jobs run independently)
 
