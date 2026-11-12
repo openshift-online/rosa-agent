@@ -1,0 +1,111 @@
+# Custom OpenShell provider profile: OpenShell gateway (self-service sandboxes)
+#
+# Scope:
+#   Lets a sandboxed agent mint its own gateway token via OIDC
+#   client_credentials and act as an openshellctl client of its own gateway,
+#   e.g. to create child sandboxes.
+#
+#   OPENSHELL_OIDC_CLIENT_SECRET is bound ONLY to the Keycloak token endpoint.
+#   The gateway host itself is L4 (no protocol/access/rules) because the
+#   supervisor's L7 relay negotiates only ALPN http/1.1 and grpc-go requires
+#   ALPN h2 — an L7 block here breaks every gRPC call openshellctl makes.
+#   Authorization at the gateway is enforced server-side by the service
+#   account's role (openshell-admin). Do not add protocol/access/rules to
+#   the gateway block.
+#
+#   Non-secret runtime values (gateway endpoint, OIDC issuer, client id,
+#   audience) cannot be passed as OPENSHELL_* sandbox env: that prefix is
+#   reserved and rejected by both openshellctl and the gateway. Pass them under
+#   unreserved names (the E2E uses NESTED_*) and hand them to openshellctl as
+#   flags: --oidc-issuer, --oidc-client-id, --oidc-audience, and the endpoint as
+#   the `gateway add` argument. `gateway add` persists them to metadata.json.
+#   Only OPENSHELL_OIDC_CLIENT_SECRET uses the reserved prefix; it is injected
+#   by the provider, which is exempt.
+#
+# Blast radius:
+#   The service account token role is openshell-admin; a sandbox holding this
+#   provider can do anything the SA can (including creating further sandboxes
+#   with no count or recursion limit). The credential is provider-gated and
+#   child sandboxes inherit the baked policy. A lower-privilege SA is tracked
+#   as a follow-up.
+#
+# Import and provision (Vault-sourced, idempotent):
+#   make openshell-provider
+#
+# Manual lint and import:
+#   openshell -g <gateway> profile lint   --file provider-profiles/openshell.yaml
+#   openshell -g <gateway> profile import --file provider-profiles/openshell.yaml --global
+#
+# Create the provider. The secret never hits argv — it is read from env by
+# openshellctl (ParseCredentialPairs with os.Getenv) when --credential is
+# passed as a bare KEY. Supply it by Vault substitution so it is never stored:
+#   env OPENSHELL_OIDC_CLIENT_SECRET="$(vault kv get -field=hypershell-oidc-client-secret osd-sre/rosa-agent)" \
+#     openshellctl -g <gateway> provider create --name rosa-agent-openshell \
+#       --type openshell --global-profile --credential OPENSHELL_OIDC_CLIENT_SECRET
+#
+# --global-profile is required when the profile was imported with --global.
+#
+# Inside the sandbox the agent sees OPENSHELL_OIDC_CLIENT_SECRET set to an
+# opaque openshell:resolve:env :* placeholder. The SDK mints a token by:
+#   1. GET <issuer>/.well-known/openid-configuration  (discovery)
+#   2. POST <issuer>/protocol/openid-connect/token with client_secret in body
+# Both paths are declared below. request_body_credential_rewrite: true is
+# required for the POST because the secret travels as a form field in the
+# request body, not a header. Percent-encoded placeholders are handled by
+# openshell-core secrets_body.rs.
+#
+id: openshell
+display_name: OpenShell gateway (self-service sandboxes)
+description: Lets a sandboxed agent mint its own gateway token via OIDC client_credentials and act as an openshellctl client of its own gateway, e.g. to create child sandboxes
+# "infrastructure" is not a ProviderProfileCategory enum value (v0.1.5); use "other"
+category: other
+credentials:
+- name: oidc_client_secret
+  description: OIDC client_credentials secret for the rosa-agent HyperShell service account (Vault osd-sre/rosa-agent field hypershell-oidc-client-secret)
+  env_vars:
+  - OPENSHELL_OIDC_CLIENT_SECRET
+  required: true
+discovery:
+  credentials:
+  - oidc_client_secret
+endpoints:
+# Keycloak OIDC issuer. Wildcarded to cover all tiers (hyp0, hyp1, hyp2).
+# * matches one subdomain level: keycloak.hyp0, keycloak.hyp1, keycloak.hyp2.
+# The client secret travels in the POST body (sdk/go oidc/credentials.go:105),
+# so request_body_credential_rewrite is required; enforcement: enforce makes
+# this block deny-by-default rather than audit (fail-open).
+- host: "keycloak.*.infra.hypershell.app"
+  port: 443
+  protocol: rest
+  enforcement: enforce
+  request_body_credential_rewrite: true
+  rules:
+  - allow:
+      method: GET
+      path: /realms/hypershell/.well-known/openid-configuration
+  - allow:
+      method: POST
+      path: /realms/hypershell/protocol/openid-connect/token
+# Gateway control-plane endpoint. The pattern covers
+# gw-openshell-<hash>.<tier>.infra.hypershell.app for all tiers; it must never
+# match a host that an L7 endpoint in this profile also matches, because the
+# supervisor combines guards with all() and refuses the connection — the client
+# sees only a bare EOF with no diagnostic. A partial-label wildcard is valid
+# only in the first DNS label (host_wildcard_shape_invalid).
+# No protocol/access/rules: openshellctl speaks gRPC (HTTP/2 via ALPN h2).
+# tls: skip is required because the supervisor's default TLS termination
+# (tls: auto) negotiates only ALPN http/1.1, which gRPC rejects with
+# "tls: no application protocol". skip makes the tunnel a raw passthrough
+# so the TLS handshake reaches the gateway directly and h2 negotiates.
+# Never put tls: skip on the Keycloak endpoint — it needs credential rewrite.
+# allow_uninspected_credentials: required by the linter when the sandbox
+# holds a declared credential and the endpoint has no L7 inspection.
+# The OIDC client secret does NOT travel to this host; the sandbox uses
+# the JWT it minted from Keycloak.
+- host: "gw-openshell-*.*.infra.hypershell.app"
+  port: 443
+  tls: skip
+  allow_uninspected_credentials: true
+binaries:
+- /usr/local/bin/openshellctl
+inference_capable: false

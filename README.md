@@ -95,6 +95,14 @@ allow-list; PagerDuty's API has no separate scope for "notes write" vs. "inciden
 split only exists at this profile's L7 rules — a coarse block here would defeat it just as surely.
 Attach the pagerduty provider to grant PagerDuty access rather than adding it to the policy.
 
+Note: OpenShell gateway / Keycloak egress is intentionally **not** in this baked policy. The
+`openshell` provider profile (`provider-profiles/openshell.yaml`) composes its own Keycloak
+endpoints (`keycloak.*.infra.hypershell.app`) with `request_body_credential_rewrite: true` and
+`enforcement: enforce`. A coarse block here would union over those rules and permit
+`OPENSHELL_OIDC_CLIENT_SECRET` egress to any host. The gateway host
+(`gw-openshell-*.hyp2-spoke1.infra.hypershell.app`) is L4 and carries no credentials.
+Attach the openshell provider to grant this access; do not add it here.
+
 ### Provider Profiles
 
 Provider profiles are custom OpenShell provider definitions that declare how a credential is
@@ -106,7 +114,7 @@ openshell provider profile lint -f provider-profiles/<profile>.yaml
 openshell provider profile import -f provider-profiles/<profile>.yaml
 ```
 
-Currently there are three profiles:
+Currently there are four profiles:
 
 * **`google-vertex-ai.yaml`** — Google Vertex AI inference for Claude Code. Based on the stock
     `google-vertex-ai` profile with two edits: `binaries` set to `[/usr/bin/curl, /usr/bin/claude]`
@@ -137,6 +145,10 @@ Currently there are three profiles:
     read/write incident notes. See the [PagerDuty](#pagerduty) section below for the full scope and
     why the read/write split is enforced entirely by this profile's allow-list rather than by
     PagerDuty itself.
+
+* **`openshell.yaml`** — Self-service sandbox creation for sandboxed agents. See the
+    [OpenShell (self-service sandboxes)](#openshell-self-service-sandboxes) section below for the
+    full scope, blast radius, and provisioning steps.
 
 ### HyperShell Service Account
 
@@ -311,6 +323,88 @@ handled by the provider — it must be passed as a plain `ENV` variable when the
   --provider rosa-agent-pagerduty \
   --env PAGERDUTY_FROM_EMAIL="sd-sre-platform+rosa-agent@redhat.com"
 ```
+
+## OpenShell (self-service sandboxes)
+
+The `openshell` provider profile (`provider-profiles/openshell.yaml`) lets a sandboxed agent mint
+its own gateway token via OIDC `client_credentials` and act as an `openshellctl` client of its own
+gateway — e.g. to create child sandboxes from inside a running sandbox.
+
+**Instance scope:** the current profile targets the hyp2 gateway only. Extending to hyp0/hyp1
+requires adding their Keycloak and gateway endpoint entries to the profile and reprovisioning;
+that is tracked as a follow-up.
+
+### What the profile grants
+
+* **OIDC token mint** — `OPENSHELL_OIDC_CLIENT_SECRET` is bound to exactly two paths on the
+  Keycloak issuer host (`keycloak.hyp2.infra.hypershell.app`):
+  * `GET /realms/hypershell/.well-known/openid-configuration` (discovery, required by the Go SDK)
+  * `POST /realms/hypershell/protocol/openid-connect/token` (token mint via `client_credentials`)
+* **Gateway control-plane** — the gateway host (`gw-openshell-*.hyp2-spoke1.infra.hypershell.app`)
+  is listed as an L4 endpoint (no `protocol`, `access`, or `rules`). L7 inspection would break
+  gRPC: `openshellctl` speaks HTTP/2 via ALPN `h2`, but the supervisor's L7 relay negotiates only
+  ALPN `http/1.1`. Authorization at the gateway is enforced server-side by the service account's
+  role (`openshell-admin`).
+
+### Blast radius
+
+The service account token role is `openshell-admin`; a sandbox holding this provider can do
+anything the SA can — including creating further sandboxes with no built-in count or recursion
+limit. Mitigations: the credential is provider-gated (not in the baked policy), and child sandboxes
+inherit the baked `policies/default.yaml`. A lower-privilege SA is tracked as a follow-up.
+
+### Non-secret env vars
+
+The following are not secrets and are not managed by the profile — pass them as plain `--env`
+values at sandbox create time (same pattern as `JIRA_EMAIL`/`JIRA_BASE_URL`):
+
+| Variable | Value |
+|---|---|
+| `OPENSHELL_GATEWAY_ENDPOINT` | `https://gw-openshell-02c8f9e0680fb903.hyp2-spoke1.infra.hypershell.app:443` |
+| `OPENSHELL_OIDC_ISSUER` | `https://keycloak.hyp2.infra.hypershell.app/realms/hypershell` |
+| `OPENSHELL_OIDC_CLIENT_ID` | `hs-sa-3L1eUHbsHIb3IC4dPUGBKvCCyZJ-3L1ectgVPHVUh1EFS7NvLC43FB9` |
+| `OPENSHELL_OIDC_AUDIENCE` | `rosa-agent-3L1eUHbsHIb3IC4dPUGBKvCCyZJ` |
+
+### Provisioning (Vault-driven, idempotent)
+
+Requires `VAULT_ADDR` and a valid Vault session. Defaults: `osd-sre/rosa-agent`, prefix `hypershell`.
+
+```bash
+export OPENSHELL_VAULT_KV_MOUNT=osd-sre
+export OPENSHELL_VAULT_KV_PATH=rosa-agent
+export OPENSHELL_VAULT_FIELD_PREFIX=hypershell
+
+make openshell-provider
+```
+
+This lints the profile, import-or-updates it on the gateway, and create-or-updates the provider.
+The OIDC client secret is read from Vault at runtime into an environment variable; it never appears
+in Make output, argv, or any file. See `docs/hypershell-providers.md` for the manual runbook.
+
+Rollback:
+
+```bash
+openshellctl provider delete rosa-agent-openshell
+openshell -g rosa-agent profile delete openshell --global  # verify verb: openshell profile --help
+```
+
+### E2E test (human-run only)
+
+```bash
+make test-e2e-nested-sandbox
+```
+
+Three ordered checks (see `hack/e2e/nested_sandbox.sh`):
+
+1. **Negative control** — without the provider attached, the gateway call is denied. Proves the
+   profile is what gates access.
+2. **Deterministic** — with the provider, the sandbox runs `openshellctl doctor` and creates a
+   child sandbox via `openshellctl sandbox create`; output contains `CHILD_OK`.
+3. **Agent-driven** — Claude Code performs the same sequence autonomously; output contains `CHILD_OK`.
+
+Post-run, `openshellctl sandbox list` shows no `e2e-nested-*` sandboxes (cleaned up by the host).
+
+Excluded from `make test` — Prow/Konflux cannot reach the HyperShell OIDC endpoint.
 
 ## Vertex
 
