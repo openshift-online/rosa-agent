@@ -1,0 +1,131 @@
+# Credentialed provider profile: GitLab CEE (staged — authored now, enabled when reachable).
+#
+# STATUS: gitlab.cee.redhat.com is not reachable from our gateways today.
+# This profile CAN be imported (--global), which is harmless: a profile alone
+# grants nothing. The provider MUST NOT be created until connectivity is
+# confirmed (plan 0014 §4a open items 1–4).
+#
+# Mirrors provider-profiles/github.yaml (as tightened by plan 0004 Feature B),
+# translated to GitLab's REST API v4. Parity rule: any later change to
+# github.yaml's write list, deny list or binaries must get the equivalent
+# change here in the same PR.
+#
+# Import (once connectivity is confirmed):
+#   openshell -g <gateway> profile lint   --file provider-profiles/gitlab-cee.yaml
+#   openshell -g <gateway> profile import --file provider-profiles/gitlab-cee.yaml --global
+#
+# Create the provider (once connectivity is confirmed):
+#   GITLAB_TOKEN="$(vault kv get -field=gitlab-token <rosa-agent-secret-path>)" \
+#     openshell -g <gateway> provider create --name rosa-agent-gitlab \
+#       --type gitlab-cee --global-profile --credential GITLAB_TOKEN
+#
+# Open items before enabling (plan 0014 §4a):
+#   1. Bot identity and namespace on gitlab.cee: confirm rosa-agent service
+#      account exists; replace <bot-namespace> below with the literal path.
+#   2. Git transport auth (SPIKE): GitLab git-over-HTTPS expects Basic auth
+#      (any username, token as password), while the REST API takes Bearer.
+#      Verify `git -c credential.helper= push https://oauth2:$GITLAB_TOKEN@...`
+#      gets its placeholder substituted through the proxy. See the Jira profile:
+#      Basic headers are decoded and re-encoded. If it fails, add a second
+#      credential entry with auth_style: basic.
+#   3. Reachability: network/VPN problem between gateway clusters and
+#      gitlab.cee.redhat.com, outside this repo.
+#   4. Token scope: request api + write_repository (narrowest covering the
+#      write list below). GitLab has no finer per-endpoint scope.
+#
+# Verification once reachable (negative tests — each must be denied):
+#   - push outside the bot namespace
+#   - DELETE of a branch through the API
+#   - MR merge
+#   - curl with the token (curl is not in binaries)
+
+id: gitlab-cee
+display_name: GitLab CEE
+description: gitlab.cee.redhat.com API and Git operations (credentialed; staged until host is reachable)
+category: source_control
+credentials:
+  - name: api_token
+    description: GitLab personal/project/group access token (api + write_repository scope)
+    env_vars: [GITLAB_TOKEN]
+    required: true
+    auth_style: bearer
+    header_name: authorization
+discovery:
+  credentials: [api_token]
+endpoints:
+  # REST API v4 and Git transport share one host on GitLab.
+  # Reads: GET/HEAD/OPTIONS on any API or repository path.
+  # Writes: only the operations below; everything else is denied by deny_rules.
+  # GraphQL: protocol: graphql at read-only enforces query-only at the
+  # semantic level (OpenShell parses the operation type). REST POST /api/graphql
+  # is NOT in the rules list — only the typed graphql endpoint below covers it.
+  - host: gitlab.cee.redhat.com
+    port: 443
+    path: /api/graphql
+    protocol: graphql
+    access: read-only
+    enforcement: enforce
+  # REST API v4 and Git transport.
+  # deny_rules block dangerous mutations before the gateway evaluates allows.
+  # (OpenShell v0.1.5: deny_rules is a sibling key on the endpoint, not entries
+  # inside rules:; L7RuleProfile only has an allow field.)
+  - host: gitlab.cee.redhat.com
+    port: 443
+    protocol: rest
+    enforcement: enforce
+    deny_rules:
+      # Deny guards — dangerous mutations blocked explicitly (plan 0014 §4a,
+      # translating plan 0004 §7.4 deny guards from github.yaml to GitLab).
+      - { method: DELETE,  path: "/**" }
+      - { method: PUT,     path: "/api/v4/projects/*/merge_requests/*/merge" }
+      - { method: POST,    path: "/api/v4/projects/*/merge_requests/*/approve" }
+      - { method: POST,    path: "/api/v4/projects/*/merge_requests/*/unapprove" }
+      - { method: "*",     path: "/api/v4/projects/*/hooks/**" }
+      - { method: "*",     path: "/api/v4/projects/*/members/**" }
+      - { method: "*",     path: "/api/v4/projects/*/protected_branches/**" }
+      - { method: "*",     path: "/api/v4/projects/*/protected_tags/**" }
+      - { method: "*",     path: "/api/v4/projects/*/deploy_keys/**" }
+      - { method: "*",     path: "/api/v4/projects/*/deploy_tokens/**" }
+      - { method: "*",     path: "/api/v4/projects/*/access_tokens/**" }
+      - { method: "*",     path: "/api/v4/projects/*/variables/**" }
+      - { method: "*",     path: "/api/v4/projects/*/pipeline_schedules/**" }
+      - { method: "*",     path: "/api/v4/projects/*/triggers/**" }
+      - { method: PUT,     path: "/api/v4/projects/*" }
+      - { method: POST,    path: "/api/v4/groups/**" }
+      - { method: PUT,     path: "/api/v4/groups/**" }
+      - { method: DELETE,  path: "/api/v4/groups/**" }
+      - { method: POST,    path: "/api/v4/user/**" }
+      - { method: PUT,     path: "/api/v4/user/**" }
+      - { method: DELETE,  path: "/api/v4/user/**" }
+      - { method: "*",     path: "/api/v4/personal_access_tokens/**" }
+    rules:
+      # Reads
+      - allow: { method: GET,     path: "/**" }
+      - allow: { method: HEAD,    path: "/**" }
+      - allow: { method: OPTIONS, path: "/**" }
+      # Fork
+      - allow: { method: POST,   path: "/api/v4/projects/*/fork" }
+      # Merge request lifecycle
+      - allow: { method: POST,   path: "/api/v4/projects/*/merge_requests" }
+      - allow: { method: PUT,    path: "/api/v4/projects/*/merge_requests/*" }
+      # Issues
+      - allow: { method: POST,   path: "/api/v4/projects/*/issues" }
+      # Notes (issue and MR comments)
+      - allow: { method: POST,   path: "/api/v4/projects/*/issues/*/notes" }
+      - allow: { method: POST,   path: "/api/v4/projects/*/merge_requests/*/notes" }
+      # Labels
+      - allow: { method: POST,   path: "/api/v4/projects/*/labels" }
+      # Git transport — clone and fetch (git-upload-pack)
+      - allow: { method: POST,   path: "/**/git-upload-pack" }
+      # Git transport — push, scoped to bot namespace. ** (not *) is deliberate:
+      # GitLab nests projects under subgroups (/<ns>/sub/project), so * would
+      # deny pushes to any subgroup repo. Plan 0014 §4a open item: confirm the
+      # bot namespace is a flat user namespace (no subgroups) before switching
+      # to * to match github.yaml's tighter scope.
+      # PLACEHOLDER: replace <bot-namespace> with the real rosa-agent namespace.
+      - allow: { method: POST,   path: "/<bot-namespace>/**/git-receive-pack" }
+# Parity with github.yaml: glab + git. claude is excluded (see github.yaml
+# for the reasoning). Add it here in the same PR if it is ever added to
+# github.yaml. /usr/local/bin/glab is where the image installs glab
+# (Containerfile builder stage).
+binaries: [/usr/local/bin/glab, /usr/bin/git]

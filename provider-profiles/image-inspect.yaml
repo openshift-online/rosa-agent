@@ -1,0 +1,61 @@
+# Capability profile: Container registry inspection (anonymous, read-only).
+#
+# Consolidates quay_registry, redhat_registry, and s3_blob_storage from
+# policies/default.yaml into one profile (plan 0014). All three share the same
+# binaries (skopeo, curl) and the same consumer (image-vuln-check,
+# quay-vuln-report). Splitting them would add providers with nothing to gain.
+#
+# No credential — a provider of this type can be created with no credential
+# value. For authenticated pulls of private repos, create a SEPARATE credentialed
+# profile; do not add a token to this one.
+#
+# Import:
+#   openshell -g <gateway> profile lint   --file provider-profiles/image-inspect.yaml
+#   openshell -g <gateway> profile import --file provider-profiles/image-inspect.yaml --global
+#
+# Create the provider (credential-less):
+#   openshell -g <gateway> provider create --name ro-image_inspect \
+#       --type image-inspect --global-profile
+#
+# Attach to: image-vuln-check and quay-vuln-report. Interactive sessions get
+# this as an opt-in, not by default.
+#
+# Behaviour change from policies/default.yaml:
+#   - /usr/bin/claude is dropped; job skills drive these hosts through
+#     skopeo/curl in Bash, never WebFetch. This removes a covert read channel.
+#   - S3 GETs outside quay's observed bucket are now denied.
+#
+# UNVERIFIED: the s3.us-east-1.amazonaws.com bucket path below comes from the
+# plan 0014 proposal, not from a live `skopeo --debug inspect` trace in this
+# sandbox. Capture a real redirect from skopeo against a quay.io image and
+# confirm the bucket path before shipping. If the bucket name differs, update
+# the path rule below and re-import on all gateways.
+
+id: image-inspect
+display_name: Container registry inspection (anonymous, read-only)
+description: quay.io and registry.access.redhat.com manifest/tag inspection for skopeo and curl (anonymous, read-only)
+category: data
+endpoints:
+  - host: quay.io
+    port: 443
+    protocol: rest
+    access: read-only
+    enforcement: enforce
+  - host: registry.access.redhat.com
+    port: 443
+    protocol: rest
+    access: read-only
+    enforcement: enforce
+  # quay.io blob storage backend — config-blob fetches (used by skopeo inspect
+  # to read OCI labels such as org.opencontainers.image.source) redirect here.
+  # Path-scoped to quay's observed S3 bucket; other buckets are denied.
+  # BUCKET PATH UNVERIFIED: confirm from `skopeo --debug inspect` output.
+  - host: s3.us-east-1.amazonaws.com
+    port: 443
+    protocol: rest
+    enforcement: enforce
+    rules:
+      - allow: { method: GET, path: "/quayio-production-s3/**" }
+      - allow: { method: HEAD, path: "/quayio-production-s3/**" }
+binaries: [/usr/bin/skopeo, /usr/bin/curl]
+inference_capable: false

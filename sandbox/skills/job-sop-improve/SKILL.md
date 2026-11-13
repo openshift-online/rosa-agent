@@ -184,20 +184,21 @@ For a stale-but-not-obsolete SOP:
    ```shell
    git push origin "sop-improve/<short-sop-slug>"
 
-   gh pr create --repo "$UPSTREAM" \
-     --head "<your-account>:sop-improve/<short-sop-slug>" \
-     --base "$DEFAULT_BRANCH" \
-     --title "Improve SOP: <path/to/sop.md>" \
-     --body "Automated improvement of a stale SOP (last updated <date>),
+   gh api repos/"$UPSTREAM"/pulls \
+     -X POST \
+     -f head="<your-account>:sop-improve/<short-sop-slug>" \
+     -f base="$DEFAULT_BRANCH" \
+     -f title="Improve SOP: <path/to/sop.md>" \
+     -f body="Automated improvement of a stale SOP (last updated <date>),
    selected at random by the SOP grooming job and improved via this repo's
    /sop-improve skill.
 
    🤖 Opened by the automated job-sop-improve run."
    ```
 
-   `gh pr create` is REST-safe (see the `github` skill) and needs no more
-   than normal fork-and-PR permissions — it does not require triage/admin
-   access on `$UPSTREAM`.
+   Use `gh api repos/.../pulls -X POST` (REST), not `gh pr create` — the latter
+   calls the GraphQL `createPullRequest` mutation, which is denied by the
+   `read-only` graphql endpoint in the `github` provider profile.
 
 ## On any failure or error: open an Issue against this job's repo
 
@@ -210,9 +211,10 @@ open a GitHub **Issue against this job's own repository,
 `openshift-online/rosa-agent`**, describing what happened.
 
 ```shell
-gh issue create --repo "openshift-online/rosa-agent" \
-  --title "job-sop-improve failure: <one-line summary>" \
-  --body "The automated SOP grooming job failed.
+gh api repos/openshift-online/rosa-agent/issues \
+  -X POST \
+  -f title="job-sop-improve failure: <one-line summary>" \
+  -f body="The automated SOP grooming job failed.
 
 - Stage: <sync | selection | decision-gate | sop-improve | pr | ...>
 - Selected SOP (if any): <path/to/sop.md>

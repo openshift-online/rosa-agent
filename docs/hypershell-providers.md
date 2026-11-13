@@ -456,6 +456,61 @@ The shorthands expand differently per protocol, so do not carry the REST
 intuition across. For `graphql`, `read-write` is `query` plus `mutation`; for
 `websocket` it is `GET` plus `WEBSOCKET_TEXT`. Only `full` is `*` everywhere.
 
+## Provider inventory
+
+### Credentialed providers (one per gateway)
+
+| Provider name | Profile | Credential source |
+| --- | --- | --- |
+| `rosa-agent-vertex` | `google-vertex-ai` | Service-account key from Vault; rotated via refresh strategy |
+| `rosa-agent-github` | `github` | Classic PAT from Vault (fine-grained pending org approval) |
+| `rosa-agent-jira` | `atlassian-jira` | API token from Vault |
+| `rosa-agent-pagerduty` | `pagerduty` | API token from Vault; rotated via refresh strategy |
+
+### Capability providers (credential-less; one per gateway)
+
+These providers carry no credential. Creating them requires no `--credential` flag:
+
+```sh
+openshell -g <registration> provider create --name ro-go_modules \
+  --type go-modules --global-profile
+```
+
+| Provider name | Profile | Attach to |
+| --- | --- | --- |
+| `ro-go_modules` | `go-modules` | sop-improve, image-vuln-check, interactive sessions |
+| `ro-ci_pipelines` | `ci-pipelines` | ops-sop-pr-review, interactive sessions |
+| `ro-image_inspect` | `image-inspect` | image-vuln-check; interactive opt-in |
+| `ro-redhat_errata` | `redhat-errata` | image-vuln-check |
+| `ro-redhat_docs` | `redhat-docs` | interactive sessions |
+| `ro-konflux` | `konflux` | interactive opt-in |
+
+Two profile entries carry **UNVERIFIED** storage bucket paths (the GCS bucket
+for `go-modules` and the S3 bucket for `image-inspect`). Confirm each from a
+live redirect trace before attaching those providers to production sandboxes.
+See the comments in `provider-profiles/go-modules.yaml` and
+`provider-profiles/image-inspect.yaml`.
+
+### `anthropic_api` — not restored (plan 0014)
+
+The `anthropic_api` rule was removed from `policies/default.yaml` and has no
+replacement provider. Three points:
+
+1. **Inference uses Vertex AI, not Anthropic directly.** `CLAUDE_CODE_USE_VERTEX=1`
+   routes all model calls through Google Vertex; `api.anthropic.com` is never
+   reached for inference.
+2. **WebSearch goes through Vertex.** Claude 4+ routes WebSearch through its
+   Vertex endpoint, not through any Anthropic-side proxy.
+3. **WebFetch preflight skipped.** Claude Code normally sends a preflight
+   request to `api.anthropic.com` (a domain-blocklist check) before fetching
+   external URLs. `skipWebFetchPreflight:
+   true` in `sandbox/settings.json` disables that check. If WebFetch fails with
+   a 403 at proxy, verify this key is the correct name in the installed Claude
+   Code version.
+
+Troubleshooting: `no such host` for `proxy.golang.org` is the normal symptom
+of a sandbox created without `ro-go_modules`. Attach the provider and retry.
+
 ## Known rough edges
 
 - `openshellctl` has reported `CREDENTIAL_KEYS 0` for providers that

@@ -127,12 +127,14 @@ spec:
 
                   openshellctl doctor \
                     --provider rosa-agent-github \
-                    --provider rosa-agent-jira \
-                    --provider rosa-agent-vertex
+                    --provider rosa-agent-vertex \
+                    --provider ro-go_modules \
+                    --provider ro-image_inspect \
+                    --provider ro-redhat_errata
 
                   openshellctl sandbox create \
                     --replace \
-                    -f /sandbox/templates/noninteractive.yaml \
+                    -f /sandbox/templates/noninteractive-image-vuln-check.yaml \
                     -p NAME="${NAME}" \
                     -p PROMPT="${PROMPT}"
               env:
