@@ -11,6 +11,7 @@ actually being reviewed and merged. Without it, PRs sit indefinitely because
 no human is specifically watching for them.
 
 This job makes no code changes and opens no PRs. Its outputs are:
+
 - GitHub comments on stalled PRs
 - Jira status comments on pending tickets
 - Jira label + transition updates when a PR merges
@@ -70,6 +71,7 @@ Scan the returned links for a GitHub PR URL matching the pattern
 `https://github.com/<owner>/<repo>/pull/<number>`. Use the first match.
 
 If no PR URL is found:
+
 - Post a Jira comment: "job-pmr-pr-review could not find a linked GitHub PR
   on this ticket. Manual triage required."
 - Skip to the next ticket. Do not remove `pmr-pr-pending` — a human needs
@@ -356,7 +358,7 @@ EOF
 
 After processing all tickets, log:
 
-```
+```text
 job-pmr-pr-review summary:
   Tickets scanned:        N
   Merged (closed):        K
