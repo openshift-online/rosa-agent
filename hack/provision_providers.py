@@ -505,13 +505,18 @@ class DefaultVaultReader:
             return result.stdout.strip()
 
 
-_NOT_FOUND_PATTERNS = [
-    "profile not found",
-    "provider not found",
-    "no such profile",
-    "no such provider",
-    "resource not found",
-]
+_NOT_FOUND_RE = re.compile(
+    r"""(?ix)                       # case-insensitive, verbose
+    (?:provider\s+)?                # optional "provider " prefix
+    (?:profile\s+)?                 # optional "profile " prefix
+    ['"]?[\w.:-]+['"]?\s+not\s+found  # name (possibly quoted) + "not found"
+    """
+)
+
+
+def _is_not_found(text):
+    """Return True if *text* looks like a 'not found' CLI error."""
+    return bool(_NOT_FOUND_RE.search(text))
 
 
 def _check_exists(runner, argv):
@@ -521,8 +526,8 @@ def _check_exists(runner, argv):
         if result.returncode != 0:
             stderr = getattr(result, "stderr", "")
             stdout = getattr(result, "stdout", "")
-            combined = f"{stdout} {stderr}".lower()
-            if any(p in combined for p in _NOT_FOUND_PATTERNS):
+            combined = f"{stdout} {stderr}"
+            if _is_not_found(combined):
                 return False, ""
             raise RuntimeError(
                 f"Unexpected error (exit {result.returncode}): "
@@ -530,8 +535,7 @@ def _check_exists(runner, argv):
             )
         return True, getattr(result, "stdout", "")
     except Exception as e:
-        msg = str(e).lower()
-        if any(p in msg for p in _NOT_FOUND_PATTERNS):
+        if _is_not_found(str(e)):
             return False, ""
         raise
 

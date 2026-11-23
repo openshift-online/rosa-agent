@@ -625,9 +625,19 @@ class FakeVaultReader:
 
 
 def _not_found_then_ok(argv, call_num):
-    """First call returns 'not found'; subsequent calls succeed (for verify)."""
+    """First call returns 'not found'; subsequent calls succeed (for verify).
+
+    Uses real CLI error messages as fixtures:
+    - openshellctl: provider "name" not found  (NotFoundError.Error(), %s %q not found)
+    - openshell:    provider profile 'name' not found  (provider.rs:1731)
+    """
     if call_num == 1:
-        return Exception("resource not found")
+        key = " ".join(argv[:6])
+        if "profile" in key:
+            profile_name = argv[5] if len(argv) > 5 else "unknown"
+            return Exception(f"provider profile '{profile_name}' not found")
+        provider_name = argv[5] if len(argv) > 5 else "unknown"
+        return Exception(f'provider "{provider_name}" not found')
     return '{"status":"ok"}'
 
 
@@ -644,7 +654,7 @@ class TestProvisionProvider(unittest.TestCase):
     def test_create_new_provider(self):
         """When profile and provider don't exist, uses import and create."""
         prov = _provider_by_name(self.desc, "rosa-agent-github")
-        self.runner.responses["profile export"] = Exception("resource not found")
+        self.runner.responses["profile export"] = Exception("provider profile 'unknown' not found")
         self.runner.responses["provider get"] = _not_found_then_ok
 
         result = pp.provision_one_provider(
@@ -748,7 +758,7 @@ class TestProvisionProvider(unittest.TestCase):
     def test_vault_sourced_credential_in_env(self):
         """Vault-sourced credential is read and passed via env."""
         prov = _provider_by_name(self.desc, "rosa-agent-github")
-        self.runner.responses["profile export"] = Exception("resource not found")
+        self.runner.responses["profile export"] = Exception("provider profile 'unknown' not found")
         self.runner.responses["provider get"] = _not_found_then_ok
         self.vault_reader.values["osd-sre/rosa-agent/github-token"] = "fake-token-123"
 
@@ -768,7 +778,7 @@ class TestProvisionProvider(unittest.TestCase):
     def test_openshell_token_pinning(self):
         """Openshell provider reads OPENSHELL_TOKEN from token file."""
         prov = _provider_by_name(self.desc, "rosa-agent-openshell")
-        self.runner.responses["profile export"] = Exception("resource not found")
+        self.runner.responses["profile export"] = Exception("provider profile 'unknown' not found")
         self.runner.responses["provider get"] = _not_found_then_ok
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -800,7 +810,7 @@ class TestProvisionProvider(unittest.TestCase):
     def test_refresh_configure_and_rotate(self):
         """Vertex provider runs configure then rotate."""
         prov = _provider_by_name(self.desc, "rosa-agent-vertex")
-        self.runner.responses["profile export"] = Exception("resource not found")
+        self.runner.responses["profile export"] = Exception("provider profile 'unknown' not found")
         self.runner.responses["provider get"] = _not_found_then_ok
 
         result = pp.provision_one_provider(
@@ -822,7 +832,7 @@ class TestProvisionProvider(unittest.TestCase):
     def test_refresh_already_configured_continues(self):
         """Second refresh configure succeeds even if CLI says 'already configured'."""
         prov = _provider_by_name(self.desc, "rosa-agent-pagerduty")
-        self.runner.responses["profile export"] = Exception("resource not found")
+        self.runner.responses["profile export"] = Exception("provider profile 'unknown' not found")
         self.runner.responses["provider get"] = _not_found_then_ok
         self.runner.responses["refresh configure"] = Exception(
             "already configured for credential key PAGERDUTY_ACCESS_TOKEN"
@@ -838,7 +848,7 @@ class TestProvisionProvider(unittest.TestCase):
     def test_nonsecret_vault_refresh_material_resolved(self):
         """Non-secret vault-sourced refresh material is resolved into argv."""
         prov = _provider_by_name(self.desc, "rosa-agent-pagerduty")
-        self.runner.responses["profile export"] = Exception("resource not found")
+        self.runner.responses["profile export"] = Exception("provider profile 'unknown' not found")
         self.runner.responses["provider get"] = _not_found_then_ok
 
         result = pp.provision_one_provider(
@@ -857,7 +867,7 @@ class TestProvisionProvider(unittest.TestCase):
 
     def test_provider_failure_isolated(self):
         """A failing provider does not prevent others from running."""
-        self.runner.responses["profile export"] = Exception("resource not found")
+        self.runner.responses["profile export"] = Exception("provider profile 'unknown' not found")
         self.runner.responses["provider get"] = _not_found_then_ok
 
         results = pp.provision_all(
@@ -868,7 +878,7 @@ class TestProvisionProvider(unittest.TestCase):
 
     def test_only_selection(self):
         """--only provisions a single provider."""
-        self.runner.responses["profile export"] = Exception("resource not found")
+        self.runner.responses["profile export"] = Exception("provider profile 'unknown' not found")
         self.runner.responses["provider get"] = _not_found_then_ok
 
         results = pp.provision_all(
@@ -881,7 +891,7 @@ class TestProvisionProvider(unittest.TestCase):
 
     def test_nonzero_summary_on_failure(self):
         """Summary returns non-zero when any provider fails."""
-        self.runner.responses["profile export"] = Exception("resource not found")
+        self.runner.responses["profile export"] = Exception("provider profile 'unknown' not found")
         self.runner.responses["provider get"] = _not_found_then_ok
         # Make github's provider create fail
         self.runner.responses["provider create"] = Exception("create failed")
@@ -895,7 +905,7 @@ class TestProvisionProvider(unittest.TestCase):
 
     def test_all_success_summary(self):
         """Summary returns zero when all providers succeed."""
-        self.runner.responses["profile export"] = Exception("resource not found")
+        self.runner.responses["profile export"] = Exception("provider profile 'unknown' not found")
         self.runner.responses["provider get"] = _not_found_then_ok
 
         results = pp.provision_all(
@@ -924,7 +934,7 @@ class TestProvisionProvider(unittest.TestCase):
 
     def test_verify_after_create(self):
         """After provider create, a 'provider get' verify call is made."""
-        self.runner.responses["profile export"] = Exception("resource not found")
+        self.runner.responses["profile export"] = Exception("provider profile 'unknown' not found")
         self.runner.responses["provider get"] = _not_found_then_ok
 
         result = pp.provision_one_provider(
@@ -944,7 +954,7 @@ class TestProvisionProvider(unittest.TestCase):
 
     def test_result_reports_created(self):
         """ProvisionResult reports 'created' when provider was new."""
-        self.runner.responses["profile export"] = Exception("resource not found")
+        self.runner.responses["profile export"] = Exception("provider profile 'unknown' not found")
         self.runner.responses["provider get"] = _not_found_then_ok
 
         result = pp.provision_one_provider(
@@ -971,7 +981,7 @@ class TestProvisionProvider(unittest.TestCase):
 
     def test_result_reports_rotated(self):
         """ProvisionResult reports rotated=True when rotate ran."""
-        self.runner.responses["profile export"] = Exception("resource not found")
+        self.runner.responses["profile export"] = Exception("provider profile 'unknown' not found")
         self.runner.responses["provider get"] = _not_found_then_ok
 
         # PagerDuty provider (index 3) has rotate_after_configure
