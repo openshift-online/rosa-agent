@@ -260,7 +260,7 @@ export JIRA_API_TOKEN=$(vault kv get -mount=osd-sre -field="jira-token" rosa-age
 openshell provider create --name "rosa-agent-jira" \
   --type atlassian-jira \
   --credential JIRA_API_TOKEN \
-  --config JIRA_EMAI="sd-sre-platform+rosa-agent@redhat.com" \
+  --config JIRA_EMAIL="sd-sre-platform+rosa-agent@redhat.com" \
   --config JIRA_BASE_URL="https://redhat.atlassian.net"
 ```
 
@@ -320,8 +320,7 @@ openshell provider refresh configure rosa-agent-pagerduty \
   --credential-key PAGERDUTY_ACCESS_TOKEN \
   --strategy oauth2-client-credentials \
   --material client_id="$PD_CLIENT_ID" \
-  --material client_secret="$PD_CLIENT_SECRET" \
-  --secret-material-key client_secret
+  --secret-material-env client_secret=PD_CLIENT_SECRET
 ```
 
 Note: The `pagerduty` Provider Profile is a custom profile, defined in this repo at
