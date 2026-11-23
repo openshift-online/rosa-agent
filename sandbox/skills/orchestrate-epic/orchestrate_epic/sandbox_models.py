@@ -10,7 +10,8 @@ from typing import Any, Dict, List, Optional
 
 MAX_SANDBOX_NAME_LENGTH = 19
 
-_K8S_LABEL_RE = re.compile(r"^[A-Za-z0-9]([A-Za-z0-9_./-]*[A-Za-z0-9])?$")
+_K8S_LABEL_KEY_RE = re.compile(r"^[A-Za-z0-9]([A-Za-z0-9_./-]*[A-Za-z0-9])?$")
+_K8S_LABEL_VALUE_RE = re.compile(r"^[A-Za-z0-9]([A-Za-z0-9_.-]*[A-Za-z0-9])?$")
 _MAX_LABEL_LENGTH = 63
 
 _VALID_SANDBOX_TYPES = frozenset({"implementation", "fixup", "nit", "rebase"})
@@ -40,6 +41,7 @@ class SandboxStatus:
 _THRESHOLDS = {
     "nit": (15, 20),
     "fixup": (20, 30),
+    "rebase": (20, 30),
     "implementation": (60, 90),
 }
 
@@ -70,14 +72,17 @@ def sandbox_name_suffixed(ticket_key: str, suffix: str) -> str:
 
 def _validate_label(key: str, value: str) -> None:
     """Validate a single label key/value pair against Kubernetes rules."""
-    for name, text in (("key", key), ("value", value)):
+    for name, text, regex in (
+        ("key", key, _K8S_LABEL_KEY_RE),
+        ("value", value, _K8S_LABEL_VALUE_RE),
+    ):
         if not text:
             raise SandboxLabelError(f"label {name} must not be empty")
         if len(text) > _MAX_LABEL_LENGTH:
             raise SandboxLabelError(
                 f"label {name} '{text}' is {len(text)} chars, max {_MAX_LABEL_LENGTH}"
             )
-        if not _K8S_LABEL_RE.match(text):
+        if not regex.match(text):
             raise SandboxLabelError(
                 f"label {name} '{text}' contains invalid characters"
             )

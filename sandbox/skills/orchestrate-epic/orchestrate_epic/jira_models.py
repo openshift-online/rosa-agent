@@ -93,9 +93,17 @@ def build_sprint_payload(issue_keys: List[str]) -> Dict[str, Any]:
     return {"issues": list(issue_keys)}
 
 
+def _escape_wiki(text: str) -> str:
+    """Escape characters that have special meaning in Jira wiki markup."""
+    for ch in ("|", "[", "]", "{", "}"):
+        text = text.replace(ch, "\\" + ch)
+    return text
+
+
 def build_epic_comment(
     stories: List[MergedStory],
     repo: str,
+    jira_base_url: str = "https://redhat.atlassian.net",
 ) -> str:
     """Build a Jira wiki markup comment summarizing the epic completion.
 
@@ -104,6 +112,7 @@ def build_epic_comment(
     if not stories:
         raise JiraPayloadError("stories must not be empty")
 
+    base = jira_base_url.rstrip("/")
     lines = [
         "h2. Epic completion summary",
         "",
@@ -115,12 +124,13 @@ def build_epic_comment(
     ]
     for s in stories:
         lines.append(
-            "|[{key}|https://redhat.atlassian.net/browse/{key}]"
+            "|[{key}|{base}/browse/{key}]"
             "|{summary}"
             "|[PR #{pr}|{url}]"
             "|{date}|".format(
                 key=s.key,
-                summary=s.summary,
+                base=base,
+                summary=_escape_wiki(s.summary),
                 pr=s.pr_number,
                 url=s.pr_url,
                 date=s.merged_date,
@@ -132,7 +142,6 @@ def build_epic_comment(
         "h3. Definition of Done",
         "",
         "* (/) All stories merged",
-        "* (/) Tests pass on all PRs",
     ])
 
     return "\n".join(lines)

@@ -103,6 +103,14 @@ class BuildLabelsTests(unittest.TestCase):
         with self.assertRaises(SandboxLabelError):
             self._base_labels(extra={"custom": "a" * 64})
 
+    def test_slash_in_value_raises(self):
+        with self.assertRaises(SandboxLabelError):
+            self._base_labels(extra={"custom": "a/b"})
+
+    def test_slash_in_key_allowed(self):
+        labels = self._base_labels(extra={"example.com/custom": "valid"})
+        self.assertEqual(labels["example.com/custom"], "valid")
+
     def test_invalid_sandbox_type_raises(self):
         with self.assertRaises(SandboxLabelError):
             self._base_labels(sandbox_type="unknown")
@@ -222,6 +230,17 @@ class BuildCreateArgsTests(unittest.TestCase):
                 label_pairs.append(args[i + 1])
         self.assertEqual(label_pairs, ["a-key=a-val", "b-key=b-val"])
 
+    def test_multiline_prompt_preserved(self):
+        prompt = "Fix these:\n- file.py:10 rename foo\n- file.py:20 remove bar"
+        args = build_create_args(
+            name="x-1",
+            template_path="t.yaml",
+            prompt=prompt,
+            labels={"a": "b"},
+        )
+        prompt_idx = args.index("PROMPT=" + prompt)
+        self.assertGreater(prompt_idx, 0)
+
     def test_empty_labels_raises(self):
         with self.assertRaises(SandboxLabelError):
             build_create_args(
@@ -308,6 +327,18 @@ class DetectStuckTests(unittest.TestCase):
 
     def test_implementation_sandbox_kill_at_90_min(self):
         verdict = detect_stuck("implementation", elapsed_minutes=90)
+        self.assertEqual(verdict, StuckVerdict.KILL)
+
+    def test_rebase_sandbox_ok_at_15_min(self):
+        verdict = detect_stuck("rebase", elapsed_minutes=15)
+        self.assertEqual(verdict, StuckVerdict.OK)
+
+    def test_rebase_sandbox_investigate_at_20_min(self):
+        verdict = detect_stuck("rebase", elapsed_minutes=20)
+        self.assertEqual(verdict, StuckVerdict.INVESTIGATE)
+
+    def test_rebase_sandbox_kill_at_30_min(self):
+        verdict = detect_stuck("rebase", elapsed_minutes=30)
         self.assertEqual(verdict, StuckVerdict.KILL)
 
     def test_unknown_type_defaults_to_implementation_thresholds(self):

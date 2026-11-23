@@ -25,7 +25,7 @@ Subcommands:
 - `sandbox-create-args --name N --template T --prompt P --run-id R --epic E --ticket K --type T [--model M] [--environment E] [--label K=V ...]` — build args with cost-tracking labels
 - `run-id --epic E` — generate a unique run ID for this orchestration run
 - `detect-stuck --type nit|fixup|implementation --elapsed-minutes N` — stuck check
-- `epic-comment --repo owner/repo` — pipe merged stories JSON, get wiki comment
+- `epic-comment --repo owner/repo [--jira-base-url URL]` — pipe merged stories JSON, get wiki comment
 - `assignee-payload --account-id ID` — Jira assignee payload
 - `remote-link-payload --url U --title T` — Jira remote link payload
 - `transition-payload --transition-id ID` — Jira transition payload
@@ -77,7 +77,7 @@ override the base or per-child keys.
 2. **Fetch epic children.** Use the Jira v3 search endpoint (v2 is removed):
 
    ```shell
-   jira "$JB/rest/api/3/search/jql?jql=%22Epic+Link%22+%3D+<EPIC>&fields=summary,status,issuetype"
+   jira "$JB/rest/api/3/search/jql?jql=parent+%3D+<EPIC>&fields=summary,status,issuetype"
    ```
 
    Pipe the result into `python3 -m orchestrate_epic filter-actionable` to
@@ -94,7 +94,7 @@ override the base or per-child keys.
 4. **Discover transition IDs** if not already known:
 
    ```shell
-   jira "$JB/rest/api/2/issue/<ANY-KEY>/transitions"
+   jira "$JB/rest/api/3/issue/<ANY-KEY>/transitions"
    ```
 
 5. **Validate scope.** Each card should have enough detail for autonomous
@@ -102,6 +102,14 @@ override the base or per-child keys.
    do NOT launch a sandbox for it.
 
 ## Phase 1 — Parallel implementation
+
+Set session variables before launching any sandboxes:
+
+```shell
+TEMPLATE="/sandbox/rosa-agent/sandbox/templates/noninteractive-keep.yaml"
+MODEL="claude-opus-4-6"
+EPIC="<EPIC-KEY>"  # e.g. ROSAENG-12345
+```
 
 Define the `_run_sandbox` wrapper once per session. All sandbox creation
 MUST go through this function to ensure cost-tracking labels are applied:
@@ -111,10 +119,13 @@ _run_sandbox() {  # usage: _run_sandbox <KEY> <type> <prompt> [name-suffix]
   local key=$1 type=$2 prompt=$3 suffix=${4:-}
   local name
   name=$(python3 -m orchestrate_epic sandbox-name "$key" ${suffix:+--suffix "$suffix"}) || return 1
-  local -a args
-  mapfile -t args < <(python3 -m orchestrate_epic sandbox-create-args \
+  local json
+  json=$(python3 -m orchestrate_epic sandbox-create-args \
     --name "$name" --template "$TEMPLATE" --prompt "$prompt" --model "$MODEL" \
-    --run-id "$RUN_ID" --epic "$EPIC" --ticket "$key" --type "$type" | jq -r '.[]') || return 1
+    --run-id "$RUN_ID" --epic "$EPIC" --ticket "$key" --type "$type") || return 1
+  local -a args
+  mapfile -d '' args < <(printf '%s' "$json" | jq -j '.[] + "\u0000"')
+  [[ ${#args[@]} -gt 0 ]] || { echo "error: sandbox-create-args produced no arguments" >&2; return 1; }
   OPENSHELL_VAULT_KV_MOUNT=osd-sre OPENSHELL_VAULT_KV_PATH=rosa-agent \
   OPENSHELL_VAULT_FIELD_PREFIX=hypershell openshellctl "${args[@]}"
 }
@@ -132,10 +143,14 @@ _run_sandbox <KEY> implementation "/implement-ticket <KEY>"
   so cost-tracking labels are applied.**
 - **Use `-f` and `-p`**, not `--template` or `--set`.
 - **`--detach` blocks** until Ready phase. Run via `run_in_background`.
-- **Use the keep-alive template** (no `noKeep: true`) so completed sandboxes
-  persist for failure inspection. The upstream `noninteractive.yaml` has
-  `noKeep: true` which auto-deletes — use the keep-alive variant instead.
+- **Use `noninteractive-keep.yaml`** (`noKeep: false`) so completed sandboxes
+  persist for failure inspection. The standard `noninteractive.yaml` has
+  `noKeep: true` which auto-deletes on completion.
 - **Max sandbox name: 19 characters.** The helper validates this.
+  Use short suffixes (`fx`, `nt`, `rb`) to leave room for longer ticket keys.
+- **`--replace` kills by name, not run-id.** Before launching a fixup for a
+  ticket that may already have a running sandbox, check with
+  `openshellctl sandbox list --selector "run-id=$RUN_ID,ticket=<key>"` first.
 - **Vault tokens expire in minutes.** Refresh proactively before every
   openshellctl call: `vault login -method=oidc -non-interactive -no-print`.
   If SSO is also expired, notify the human.
@@ -172,8 +187,8 @@ When the human provides PR review feedback:
 2. Launch a fixup sandbox via `_run_sandbox` with the matching type:
 
    ```shell
-   _run_sandbox <KEY> fixup "<fixup prompt with PR#, branch, file:line refs>" fixup
-   _run_sandbox <KEY> nit "<nit prompt>" nits
+   _run_sandbox <KEY> fixup "<fixup prompt with PR#, branch, file:line refs>" fx
+   _run_sandbox <KEY> nit "<nit prompt>" nt
    ```
 
    The prompt MUST include:
@@ -199,7 +214,7 @@ When the human provides PR review feedback:
    via `_run_sandbox`:
 
    ```shell
-   _run_sandbox <KEY> rebase "<rebase + fixup prompt>" rebase
+   _run_sandbox <KEY> rebase "<rebase + fixup prompt>" rb
    ```
 4. **Draft PR gotcha**: `gh pr merge` fails on drafts. Run
    `gh pr ready <N> --repo <owner/repo>` first.
@@ -208,28 +223,30 @@ When the human provides PR review feedback:
 
 After each PR merges:
 
-1. Add card to sprint:
+1. Add card to sprint (use the v3 issue update endpoint — the agile POST
+   endpoint is not in the provider profile allow-list):
 
    ```shell
-   python3 -m orchestrate_epic sprint-payload <KEY> | jira -H "Content-Type: application/json" -X POST "$JB/rest/agile/1.0/sprint/<sprintId>/issue" -d @-
+   jira -H "Content-Type: application/json" -X PUT "$JB/rest/api/3/issue/<KEY>" \
+     -d '{"fields": {"sprint": {"id": <sprintId>}}}'
    ```
 
 2. Update assignee:
 
    ```shell
-   python3 -m orchestrate_epic assignee-payload --account-id <ID> | jira -H "Content-Type: application/json" -X PUT "$JB/rest/api/2/issue/<KEY>" -d @-
+   python3 -m orchestrate_epic assignee-payload --account-id <ID> | jira -H "Content-Type: application/json" -X PUT "$JB/rest/api/3/issue/<KEY>" -d @-
    ```
 
 3. Add PR link:
 
    ```shell
-   python3 -m orchestrate_epic remote-link-payload --url <PR_URL> --title "PR #N: title" | jira -H "Content-Type: application/json" -X POST "$JB/rest/api/2/issue/<KEY>/remotelink" -d @-
+   python3 -m orchestrate_epic remote-link-payload --url <PR_URL> --title "PR #N: title" | jira -H "Content-Type: application/json" -X POST "$JB/rest/api/3/issue/<KEY>/remotelink" -d @-
    ```
 
 4. Transition to Closed:
 
    ```shell
-   python3 -m orchestrate_epic transition-payload --transition-id <ID> | jira -H "Content-Type: application/json" -X POST "$JB/rest/api/2/issue/<KEY>/transitions" -d @-
+   python3 -m orchestrate_epic transition-payload --transition-id <ID> | jira -H "Content-Type: application/json" -X POST "$JB/rest/api/3/issue/<KEY>/transitions" -d @-
    ```
 
 After all stories merge, add an epic completion comment and close the epic:
@@ -238,7 +255,8 @@ After all stories merge, add an epic completion comment and close the epic:
 echo '<merged-stories-json>' | python3 -m orchestrate_epic epic-comment --repo <owner/repo>
 ```
 
-The comment uses Jira wiki markup (h2., ||table||, [text|url], (/)).
+The comment uses Jira wiki markup (h2., ||table||, [text|url]). Special
+characters (|, [, ]) in summaries are escaped automatically.
 
 ### Known Jira limitations
 
@@ -290,6 +308,7 @@ Run `python3 -m orchestrate_epic detect-stuck --type <type> --elapsed-minutes <N
 | --- | --- | --- | --- |
 | nit | 5-10 min | 15 min | 20 min |
 | fixup | 10-15 min | 20 min | 30 min |
+| rebase | 10-15 min | 20 min | 30 min |
 | implementation | 15-45 min | 60 min | 90 min |
 
 ### Hardened prompt rules (prevent stuck sandboxes)
@@ -310,12 +329,13 @@ Different repos use different CI. Detect before advising on merge:
   PRs may need manual workflow approval
 - Do NOT use Prow commands on GH Actions repos — they do nothing
 
-## Template: `${...}` conflicts
+## Template: `${...}` substitution
 
-openshellctl scans the ENTIRE manifest YAML for `${...}` patterns —
-including command text. Bash variable references like `${VAR}` will be
-treated as unresolved template parameters. Use `env | grep` or `$VAR`
-(without braces) instead.
+openshellctl scans string values in the manifest YAML for `${KEY}`
+patterns and substitutes them with `-p KEY=VALUE` parameters. This
+only applies to the manifest file — values passed via `-p` are NOT
+re-scanned. Use `$${VAR}` to escape a literal `${VAR}` in the manifest
+if needed (the `$$` prefix prevents substitution).
 
 ## stdout capture
 

@@ -198,6 +198,28 @@ class BuildEpicCommentTests(unittest.TestCase):
         with self.assertRaises(JiraPayloadError):
             build_epic_comment([], repo="org/repo")
 
+    def test_escapes_wiki_chars_in_summary(self):
+        stories = [
+            MergedStory(key="X-1", summary="fix [array|list] parsing", pr_number=1, pr_url="https://example.com/pull/1", merged_date="2026-01-01"),
+        ]
+        comment = build_epic_comment(stories, repo="org/repo")
+        self.assertIn("fix \\[array\\|list\\] parsing", comment)
+
+    def test_custom_jira_base_url(self):
+        stories = [
+            MergedStory(key="X-1", summary="test", pr_number=1, pr_url="https://example.com/pull/1", merged_date="2026-01-01"),
+        ]
+        comment = build_epic_comment(stories, repo="org/repo", jira_base_url="https://custom.atlassian.net")
+        self.assertIn("custom.atlassian.net/browse/X-1", comment)
+        self.assertNotIn("redhat.atlassian.net", comment)
+
+    def test_no_false_tests_pass_claim(self):
+        stories = [
+            MergedStory(key="X-1", summary="test", pr_number=1, pr_url="https://example.com/pull/1", merged_date="2026-01-01"),
+        ]
+        comment = build_epic_comment(stories, repo="org/repo")
+        self.assertNotIn("Tests pass", comment)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -110,6 +110,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="Build an epic completion comment. Read merged stories JSON from stdin.",
     )
     p_comment.add_argument("--repo", required=True)
+    p_comment.add_argument(
+        "--jira-base-url",
+        default="https://redhat.atlassian.net",
+    )
     p_comment.set_defaults(func=cmd_epic_comment)
 
     p_assign = sub.add_parser(
@@ -216,7 +220,9 @@ def cmd_detect_stuck(args: argparse.Namespace) -> int:
 def cmd_epic_comment(args: argparse.Namespace) -> int:
     data = json.load(sys.stdin)
     stories = [MergedStory(**s) for s in data]
-    comment = build_epic_comment(stories, repo=args.repo)
+    comment = build_epic_comment(
+        stories, repo=args.repo, jira_base_url=args.jira_base_url,
+    )
     print(comment)
     return 0
 
@@ -249,7 +255,14 @@ def run(argv: Optional[List[str]] = None) -> int:
         return 1
     try:
         return args.func(args)
-    except (JiraPayloadError, SandboxLabelError, SandboxNameError) as exc:
+    except (
+        JiraPayloadError,
+        SandboxLabelError,
+        SandboxNameError,
+        json.JSONDecodeError,
+        KeyError,
+        TypeError,
+    ) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
 

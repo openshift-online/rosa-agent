@@ -131,6 +131,27 @@ class SandboxCreateArgsCliTests(unittest.TestCase):
             ])
         self.assertEqual(ctx.exception.code, 2)
 
+    def test_multiline_prompt_in_json_output(self):
+        prompt = "Fix these:\n- file.py:10 rename foo\n- file.py:20 remove bar"
+        old_stdout = sys.stdout
+        sys.stdout = io.StringIO()
+        try:
+            code = run([
+                "sandbox-create-args",
+                "--name", "mcs-278",
+                "--template", "/tmp/keep.yaml",
+                "--prompt", prompt,
+                "--run-id", "epic-1-202611231430",
+                "--epic", "EPIC-1",
+                "--ticket", "MCS-278",
+                "--type", "implementation",
+            ])
+            output = json.loads(sys.stdout.getvalue())
+        finally:
+            sys.stdout = old_stdout
+        self.assertEqual(code, 0)
+        self.assertIn("PROMPT=" + prompt, output)
+
     def test_extra_label_no_equals_exits(self):
         old_stderr = sys.stderr
         sys.stderr = io.StringIO()
@@ -167,6 +188,42 @@ class RunIdCliTests(unittest.TestCase):
             sys.stdout = old_stdout
         self.assertEqual(code, 0)
         self.assertTrue(output.startswith("rosaeng-123-"))
+
+
+class EpicCommentCliTests(unittest.TestCase):
+    def test_bad_merged_story_input_exits_1(self):
+        old_stdin = sys.stdin
+        sys.stdin = io.StringIO(json.dumps([{"key": "X-1"}]))
+        old_stdout = sys.stdout
+        sys.stdout = io.StringIO()
+        old_stderr = sys.stderr
+        sys.stderr = io.StringIO()
+        try:
+            code = run(["epic-comment", "--repo", "org/repo"])
+            stderr_output = sys.stderr.getvalue()
+        finally:
+            sys.stdin = old_stdin
+            sys.stdout = old_stdout
+            sys.stderr = old_stderr
+        self.assertEqual(code, 1)
+        self.assertIn("error:", stderr_output)
+
+    def test_invalid_json_exits_1(self):
+        old_stdin = sys.stdin
+        sys.stdin = io.StringIO("not json")
+        old_stdout = sys.stdout
+        sys.stdout = io.StringIO()
+        old_stderr = sys.stderr
+        sys.stderr = io.StringIO()
+        try:
+            code = run(["epic-comment", "--repo", "org/repo"])
+            stderr_output = sys.stderr.getvalue()
+        finally:
+            sys.stdin = old_stdin
+            sys.stdout = old_stdout
+            sys.stderr = old_stderr
+        self.assertEqual(code, 1)
+        self.assertIn("error:", stderr_output)
 
 
 class DetectStuckCliTests(unittest.TestCase):
