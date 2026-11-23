@@ -196,12 +196,11 @@ def build_profile_argv(prov, gateway, profile_exists=False):
     if profile_exists:
         update_cmd = [
             "openshell", "-g", gateway,
-            "profile", "update", profile_id, "--file",
-            "{tmp_file_with_resource_version}",
+            "profile", "update", profile_id,
+            "--file", "{tmp_file}",
         ]
         if global_flag:
             update_cmd.append("--global")
-        update_cmd.append("{resource_version}")
         return [lint_cmd, update_cmd]
     else:
         import_cmd = [
@@ -349,10 +348,8 @@ def build_refresh_argv(prov, vault, gateway):
 
 def _substitute_env_refs(arg, env):
     """Replace ${VAR} references in an argv string with resolved env values."""
-    import re
     def _replace(m):
-        var = m.group(1)
-        return env.get(var, m.group(0))
+        return env.get(m.group(1), m.group(0))
     return re.sub(r'\$\{([^}]+)\}', _replace, arg)
 
 
@@ -480,25 +477,33 @@ class DefaultVaultReader:
             return result.stdout.strip()
 
 
-def _check_exists(runner, argv, gateway):
+_NOT_FOUND_PATTERNS = [
+    "profile not found",
+    "provider not found",
+    "no such profile",
+    "no such provider",
+    "resource not found",
+]
+
+
+def _check_exists(runner, argv):
     """Run a get/export command; return (exists: bool, output: str)."""
     try:
         result = runner.run(argv, check=False)
-        if hasattr(result, "returncode"):
-            if result.returncode != 0:
-                stderr = getattr(result, "stderr", "")
-                stdout = getattr(result, "stdout", "")
-                combined = f"{stdout} {stderr}".lower()
-                if "not found" in combined:
-                    return False, ""
-                raise RuntimeError(
-                    f"Unexpected error (exit {result.returncode}): "
-                    f"{stderr or stdout}"
-                )
-            return True, getattr(result, "stdout", "")
-        return True, str(result)
+        if result.returncode != 0:
+            stderr = getattr(result, "stderr", "")
+            stdout = getattr(result, "stdout", "")
+            combined = f"{stdout} {stderr}".lower()
+            if any(p in combined for p in _NOT_FOUND_PATTERNS):
+                return False, ""
+            raise RuntimeError(
+                f"Unexpected error (exit {result.returncode}): "
+                f"{stderr or stdout}"
+            )
+        return True, getattr(result, "stdout", "")
     except Exception as e:
-        if "not found" in str(e).lower():
+        msg = str(e).lower()
+        if any(p in msg for p in _NOT_FOUND_PATTERNS):
             return False, ""
         raise
 
@@ -552,6 +557,41 @@ def _resolve_env_for_refresh(refresh, vault, vault_reader):
     return env
 
 
+def _extract_resource_version(export_output):
+    """Extract resource_version from profile export output."""
+    for line in export_output.splitlines():
+        if line.startswith("resource_version:"):
+            return line.split(":", 1)[1].strip()
+    return None
+
+
+def _make_tmp_profile(profile_path, resource_version):
+    """Create a temp file with resource_version appended. Returns its path.
+
+    NamedTemporaryFile creates files with 0600 permissions by default.
+    """
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".yaml", delete=False
+    ) as f:
+        tmp_file = f.name
+        if os.path.isfile(profile_path):
+            with open(profile_path) as src:
+                content = src.read()
+                f.write(content)
+                if content and not content.endswith("\n"):
+                    f.write("\n")
+        f.write(f"resource_version: {resource_version}\n")
+    return tmp_file
+
+
+def _format_error(e):
+    """Format an exception for ProvisionResult, including stderr if available."""
+    stderr = getattr(e, "stderr", None)
+    if stderr:
+        return f"{e}: {stderr.strip()}"
+    return str(e)
+
+
 def provision_one_provider(prov, vault, gateway, runner=None, vault_reader=None,
                             base_dir=".", config_dir=None):
     """Provision a single provider: profile + provider + optional refresh.
@@ -564,89 +604,47 @@ def provision_one_provider(prov, vault, gateway, runner=None, vault_reader=None,
         vault_reader = DefaultVaultReader()
 
     name = prov["name"]
-    profile_id = prov["profile"]
 
     try:
         # 1. Check if profile exists
         profile_exists, export_output = _check_exists(
             runner,
-            ["openshell", "-g", gateway, "profile", "export", profile_id,
+            ["openshell", "-g", gateway, "profile", "export", prov["profile"],
              *(["--global"] if prov.get("global_profile") else [])],
-            gateway,
         )
 
         # 2. Build and execute profile commands
-        if profile_exists:
-            # Extract resource_version
-            rv = None
-            for line in export_output.splitlines():
-                if line.startswith("resource_version:"):
-                    rv = line.split(":", 1)[1].strip()
-                    break
+        profile_cmds = build_profile_argv(prov, gateway, profile_exists=profile_exists)
+        tmp_file = None
+        try:
+            if profile_exists:
+                rv = _extract_resource_version(export_output)
+                if not rv:
+                    raise RuntimeError(
+                        "Could not extract resource_version from profile export"
+                    )
+                profile_path = os.path.join(base_dir, prov["profile_file"])
+                tmp_file = _make_tmp_profile(profile_path, rv)
 
-            if not rv:
-                raise RuntimeError(
-                    f"Could not extract resource_version from profile export"
-                )
-
-            # Create temp file with resource_version appended
-            profile_path = os.path.join(base_dir, prov["profile_file"])
-            tmp_file = None
-            try:
-                with tempfile.NamedTemporaryFile(
-                    mode="w", suffix=".yaml", delete=False
-                ) as f:
-                    tmp_file = f.name
-                    if os.path.isfile(profile_path):
-                        with open(profile_path) as src:
-                            f.write(src.read())
-                    f.write(f"resource_version: {rv}\n")
-                os.chmod(tmp_file, 0o600)
-
-                # Lint
-                runner.run([
-                    "openshell", "-g", gateway,
-                    "profile", "lint", "--file", prov["profile_file"],
-                ])
-
-                # Update
-                update_cmd = [
-                    "openshell", "-g", gateway,
-                    "profile", "update", profile_id,
-                    "--file", tmp_file,
+            for cmd in profile_cmds:
+                resolved = [
+                    tmp_file if arg == "{tmp_file}" else arg
+                    for arg in cmd
                 ]
-                if prov.get("global_profile"):
-                    update_cmd.append("--global")
-                runner.run(update_cmd)
-            finally:
-                if tmp_file and os.path.exists(tmp_file):
-                    os.unlink(tmp_file)
-        else:
-            # Lint
-            runner.run([
-                "openshell", "-g", gateway,
-                "profile", "lint", "--file", prov["profile_file"],
-            ])
-            # Import
-            import_cmd = [
-                "openshell", "-g", gateway,
-                "profile", "import", "--file", prov["profile_file"],
-            ]
-            if prov.get("global_profile"):
-                import_cmd.append("--global")
-            runner.run(import_cmd)
+                runner.run(resolved)
+        finally:
+            if tmp_file and os.path.exists(tmp_file):
+                os.unlink(tmp_file)
 
         # 3. Check if provider exists
         provider_exists, _ = _check_exists(
             runner,
             ["openshellctl", "-g", gateway, "provider", "get", name],
-            gateway,
         )
 
         # 4. Resolve credentials env
         cred_env = _resolve_env_for_credentials(prov, vault, vault_reader)
 
-        # Gateway token pinning
         if prov.get("pin_gateway_token"):
             token = _read_gateway_token(gateway, config_dir=config_dir)
             if token:
@@ -681,7 +679,7 @@ def provision_one_provider(prov, vault, gateway, runner=None, vault_reader=None,
         return ProvisionResult(name, success=True)
 
     except Exception as e:
-        return ProvisionResult(name, success=False, error=str(e))
+        return ProvisionResult(name, success=False, error=_format_error(e))
 
 
 def provision_all(desc, gateway, runner=None, vault_reader=None,
