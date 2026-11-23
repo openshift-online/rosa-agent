@@ -153,64 +153,68 @@ run holds the lock and will comment if it hits a blocker.
 
 **After a successful 2xx transition,** continue to step 3.
 
-## 3. Identify the target repository
+## 3. Identify target repositories
 
-This is inference, not a script: look for an explicit `owner/repo` or GitHub
-URL in the description/comments, the Jira project/component naming
-conventions, or linked issues. If you genuinely cannot determine which repo
-the ticket concerns, that's a blocker - go to step 10 (comment on the ticket
-asking for the repo) rather than guessing one.
+This is inference, not a script: look for explicit `owner/repo` values or
+GitHub URLs in the description/comments, the Jira project/component naming
+conventions, or linked issues. A proposal from `pmr-remediation-analysis`
+will list repos in its "Where" section — read it carefully.
 
-From this point on, `$UPSTREAM` is the owner/repo identified above (e.g.
-`openshift-online/some-repo`) and `$FORK` is `rosa-agent/<repo-name>`.
+**A ticket may involve more than one repository.** This is normal and handled
+in steps 3a and 4. Build a list of all repos the ticket requires changes in.
+If you genuinely cannot determine any repo, that's a blocker — go to step 10
+(comment on the ticket asking for the repo) rather than guessing.
 
-## 3a. Check for an existing PR or branch (deduplication)
+From this point on, `REPOS` is the ordered list of `owner/repo` values
+identified (e.g. `["openshift/ops-sop", "openshift/managed-cluster-config"]`).
+For each entry, `$UPSTREAM` is that owner/repo and `$FORK` is
+`rosa-agent/<repo-name>`. Steps 3a and 4 run once per repo in this list.
 
-Now that you know `$UPSTREAM` and `$FORK`, check whether a prior run already
-handled this ticket. This step runs after step 3 (not before) because PMR PRs
-are opened from the fork against the upstream repo for the ticket's own target —
-not against `openshift-online/rosa-agent`.
+## 3a. Check for existing PRs or branches (deduplication, per repo)
 
-**Single API call covers all states** — open, merged, and closed-unmerged:
+For **each repo** in `REPOS`, check whether a prior run already handled that
+repo's portion of this ticket. The branch name is the same in every repo:
+`pmr-action-item/<ISSUE-KEY>`.
 
 ```shell
 BRANCH="pmr-action-item/${ISSUE_KEY}"
+
+# For each UPSTREAM / FORK pair:
 PR_RESULT=$(gh api \
   "repos/${UPSTREAM}/pulls?head=rosa-agent:${BRANCH}&state=all" \
   --jq '.[0] | {number, html_url, state, merged_at}')
-```
 
-**Check for an existing branch** on the fork:
-
-```shell
 gh api "repos/${FORK}/branches/${BRANCH}" --jq '.name' >/dev/null 2>&1
-BRANCH_EXISTS=$?  # 0 = branch exists; non-zero = 404 / not found
+BRANCH_EXISTS=$?
 ```
 
-**Decision logic — and what to do with the In Progress lock in each case:**
+**Per-repo decision logic:**
 
-- **PR found, `state=open`** — work is already in review. Leave the ticket In
-  Progress (it correctly reflects active work). Ensure the remote link exists on
-  the ticket (`POST .../remotelink` if not already there). Stop — not a failure.
-- **PR found, `merged_at` not null** — ticket is done. Transition the ticket to
-  Done (find a "Done" or "Closed" transition id and POST it), or if that
-  transition is unavailable, leave a comment noting the PR is merged and the
-  ticket should be closed. Stop.
-- **PR found, `state=closed`, `merged_at` null** — prior run was abandoned; this
-  is a step 10 blocker. Comment on the ticket noting the closed-unmerged PR
-  (include URL), transition back to "To Do" (unlock), and stop. A human must
-  clean up the branch and PR before retrying.
-- **No PR, `$BRANCH_EXISTS=0`** (branch on fork, no PR) — a prior run may have
-  crashed mid-push. This is a step 10 blocker: comment on the ticket noting the
-  orphaned branch, transition back to "To Do" (unlock), and stop. Do not
-  silently discard — nobody reads cron stdout.
-- **No PR, no branch** → clear to proceed.
+- **PR found, `state=open`** — this repo's work is already in review. Record
+  the PR URL; skip to the next repo (do not re-implement or re-push). After
+  checking all repos, if every repo has an open or merged PR, leave the ticket
+  In Progress and stop (not a failure).
+- **PR found, `merged_at` not null** — this repo is done. Record it as merged;
+  skip to the next repo. After checking all repos, if all are merged, transition
+  the ticket to Done and stop.
+- **PR found, `state=closed`, `merged_at` null** — prior run was abandoned.
+  This is a step 10 blocker for the whole run: comment on the ticket noting
+  the closed-unmerged PR (include URL and repo), transition back to "To Do"
+  (unlock), and stop. A human must clean up before retrying.
+- **No PR, `$BRANCH_EXISTS=0`** (branch on fork, no PR) — orphaned branch.
+  Step 10 blocker: comment noting the orphaned branch (include repo), transition
+  back to "To Do", and stop.
+- **No PR, no branch** → clear to proceed for this repo.
 
-## 4. Fork and sync, then branch
+After checking all repos: if any are blockers, stop per step 10. If some repos
+already have open/merged PRs and others are clear, proceed only for the clear
+ones (you are completing a partial prior run).
 
-Before touching anything in the resolved repo, sync your fork to its
-upstream default branch (this never assumes `main` - it discovers the real
-default branch, and never force-merges a divergence):
+## 4. Fork, sync, and branch (per repo)
+
+For **each repo in `REPOS` that is clear to proceed**, sync the fork and
+establish the branch lock. Do this in sequence (not in parallel) so a sync
+failure in one repo doesn't leave others half-initialized.
 
 ```shell
 FORK=rosa-agent/<repo-name> UPSTREAM=<owner>/<repo> \
@@ -218,12 +222,11 @@ FORK=rosa-agent/<repo-name> UPSTREAM=<owner>/<repo> \
 ```
 
 - Exit code 2 means the fork has diverged from upstream; a failure Issue is
-  already filed against `openshift-online/rosa-agent`. Stop - don't force a
+  already filed against `openshift-online/rosa-agent`. Stop — don't force a
   merge.
 - Do this fresh every run, even against a repo you've synced before.
 
-Then check out a feature branch named from the issue key, and immediately
-push it with the atomic lease (the hard mutex against concurrent runs):
+Then check out the feature branch and push the atomic lease:
 
 ```shell
 git checkout -b "pmr-action-item/<ISSUE-KEY>"
@@ -231,27 +234,32 @@ git push --force-with-lease=refs/heads/pmr-action-item/<ISSUE-KEY>: \
   origin "HEAD:refs/heads/pmr-action-item/<ISSUE-KEY>"
 ```
 
-If the push is **rejected** (exit code non-zero, remote says the ref already
-exists), another run beat you to this branch. Transition the ticket back to
-"To Do" and stop — no comment needed, the other run holds the lock.
-If the push succeeds, this run owns the branch for the lifetime of the ticket.
+If the push is **rejected** in any repo (exit code non-zero, remote says the
+ref already exists), another run beat you to that repo's branch. Transition
+the ticket back to "To Do" and stop — no comment needed.
+
+If the push succeeds for all clear repos, this run owns those branches.
 (Step 11 does the real content push; this push establishes the lease.)
 
 ## 5. Implement the work described in the ticket
 
-Your own inference - there is no script for this step. Before changing
-anything, run the target repo's own test suite (however it's invoked there -
-`make test`, `go test ./...`, etc.) so you know the baseline is green. Make
-the change the ticket describes. Run the same test suite again - it must
-still pass. Commit, with a message that references the issue key.
+Your own inference - there is no script for this step. For **each repo** you
+have branched in step 4, implement the portion of the ticket that belongs to
+that repo. Before changing anything in a repo, run its own test suite
+(`make test`, `go test ./...`, etc.) so you know the baseline is green. Make
+the changes, then run the same test suite again — it must still pass. Commit
+in each repo with a message that references the issue key.
+
+Work through repos sequentially. All changes across all repos together
+constitute the full implementation of the ticket.
 
 For how the code itself is written and tested - TDD per task, pure functions
 behind thin I/O shells, hermetic tests, typed errors, security defaults -
 follow sections 2 and 3 of the `implement-ticket` skill. This skill owns the
 run, so its mechanics win wherever the two differ: the branch name above,
 the step 6 fan-out and its CONFIRMED/PLAUSIBLE finding format, the
-non-interactive rules, blockers going on the ticket, and how the PR is
-opened in step 8.
+non-interactive rules, blockers going on the ticket, and how PRs are opened
+in step 11.
 
 ## 6. Security fan-out - mandatory, both of the following
 
@@ -460,25 +468,29 @@ and so are these, non-access blockers that equally stop forward progress:
 This is a normal, expected outcome of hitting the edge of what this sandbox can
 reach — not a failure to hide or apologize for.
 
-## 11. Open the PR
+## 11. Open PRs (one per repo)
 
-Push the branch, then open the PR with this skill's attribution label via
-the `github-labels` skill (never construct the label-attach calls yourself):
+For **each repo** you implemented changes in, push its branch and open a PR.
+Run these sequentially so a failure in one repo doesn't silently skip the rest.
 
 ```shell
+# Repeat for each UPSTREAM / repo:
 git push origin "pmr-action-item/<ISSUE-KEY>"
 FORK_OWNER=rosa-agent UPSTREAM=<owner>/<repo> \
   BRANCH="pmr-action-item/<ISSUE-KEY>" \
-  TITLE="<ISSUE-KEY>: <short description>" \
-  BODY="<summary of the change, referencing <ISSUE-KEY>>" \
+  TITLE="<ISSUE-KEY>: <short description scoped to this repo>" \
+  BODY="<summary of this repo's change, referencing <ISSUE-KEY>>" \
   bash /sandbox/.claude/skills/github-labels/open-labeled-pr.sh
 ```
 
+Collect every PR URL as you go — they all get linked back in step 12.
+
 ## 12. Link back to the ticket
 
-If step 10 didn't already fire for this run: add a Jira remote (web) link on
-the ticket pointing at the new PR (`POST .../remotelink`), and post a short
-comment summarizing what was changed and why.
+If step 10 didn't already fire for this run: for each PR opened in step 11,
+add a Jira remote (web) link on the ticket (`POST .../remotelink`). Then post
+a single comment summarizing all repos changed and all PR URLs, so the ticket
+is a complete record of the work done.
 
 ## Guardrails
 
@@ -497,7 +509,7 @@ comment summarizing what was changed and why.
 - Never retry past a `403` or any other access issue - report the exact
   cause (via a ticket comment if it's ticket-specific per step 10, via
   `file_failure_issue` if it's this job's own mechanics) and stop.
-- One ticket, one PR per run.
+- One ticket per run; one PR per repo (a ticket spanning N repos produces N PRs).
 
 ## Failures
 

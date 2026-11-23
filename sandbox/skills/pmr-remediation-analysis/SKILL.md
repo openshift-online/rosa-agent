@@ -607,8 +607,8 @@ recurrence. Address why this approach vs alternatives.]
 ## Next Steps
 
 1. **Grooming gate:** Human review/approval (MCS-46 Stage 4)
-2. **If approved:** Assign to rosa-agent
-3. **Implementation:** rosa-agent writes tests first, then fix (pmr-action-item skill)
+2. **If approved:** Assign to rosa-agent (already done if discovery mode ran this analysis)
+3. **Implementation:** rosa-agent writes tests first, then fix (pmr-action-item skill) — handles multi-repo proposals with one PR per repo under this ticket
 4. **Review gate:** PR review before merge
 
 ---
@@ -671,6 +671,12 @@ jira -H "Content-Type: application/json" \
 The script outputs `{"body": {...ADF doc...}}` ready to POST. The full proposal
 text (Failure Mechanism, Proposed Change, Rationale, Verification Approach,
 Provenance) must be in `$PROPOSAL_TEXT` — do not post a truncated summary.
+
+**Multi-repo proposals:** When the proposal spans more than one `owner/repo`,
+include all repos clearly in the "Where" section of the proposal text. The
+`pmr-action-item` skill handles multi-repo work under a single ticket — it
+opens one PR per repo and links all of them back to this ticket. No ticket
+splitting is needed.
 
 ## Decline Path: Cannot Propose Sound Remediation
 
