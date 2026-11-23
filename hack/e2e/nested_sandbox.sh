@@ -8,7 +8,7 @@
 #   - VAULT_ADDR is set and a valid Vault token exists (run `make openshell-vault-login` first)
 #   - OPENSHELL_VAULT_KV_MOUNT, OPENSHELL_VAULT_KV_PATH, OPENSHELL_VAULT_FIELD_PREFIX are set
 #   - openshellctl is on PATH and the gateway is registered (run `make openshell-gateway` first)
-#   - The openshell profile and provider are provisioned (run `make openshell-provider` first)
+#   - The openshell profile and provider are provisioned (run `make provider PROVIDER=rosa-agent-openshell` first)
 #
 # Exit codes:
 #   0  all three checks passed

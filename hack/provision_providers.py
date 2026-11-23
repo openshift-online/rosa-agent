@@ -690,8 +690,12 @@ def provision_one_provider(prov, vault, gateway, runner=None, vault_reader=None,
 
         if prov.get("pin_gateway_token"):
             token = _read_gateway_token(gateway, config_dir=config_dir)
-            if token:
-                cred_env["OPENSHELL_TOKEN"] = token
+            if not token:
+                raise RuntimeError(
+                    "pin_gateway_token is set but no OIDC token file found; "
+                    "run 'make openshell-gateway' first"
+                )
+            cred_env["OPENSHELL_TOKEN"] = token
 
         # 5. Build and execute provider commands
         action = "updated" if provider_exists else "created"

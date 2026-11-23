@@ -402,16 +402,14 @@ values at sandbox create time (same pattern as `JIRA_EMAIL`/`JIRA_BASE_URL`):
 | `OPENSHELL_OIDC_CLIENT_ID` | `hs-sa-3L1eUHbsHIb3IC4dPUGBKvCCyZJ-3L1ectgVPHVUh1EFS7NvLC43FB9` |
 | `OPENSHELL_OIDC_AUDIENCE` | `rosa-agent-3L1eUHbsHIb3IC4dPUGBKvCCyZJ` |
 
-### Provisioning (Vault-driven, idempotent)
+### Provisioning
 
-Requires `VAULT_ADDR` and a valid Vault session. Defaults: `osd-sre/rosa-agent`, prefix `hypershell`.
+Use the data-driven provisioning target to provision this provider along with
+all others, or provision it individually:
 
 ```bash
-export OPENSHELL_VAULT_KV_MOUNT=osd-sre
-export OPENSHELL_VAULT_KV_PATH=rosa-agent
-export OPENSHELL_VAULT_FIELD_PREFIX=hypershell
-
-make openshell-provider
+make providers                                    # all five providers
+make provider PROVIDER=rosa-agent-openshell       # just this one
 ```
 
 This lints the profile, import-or-updates it on the gateway, and create-or-updates the provider.

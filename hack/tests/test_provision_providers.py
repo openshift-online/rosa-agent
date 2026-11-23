@@ -650,6 +650,15 @@ class TestProvisionProvider(unittest.TestCase):
         self.gateway = "rosa-agent"
         self.runner = FakeRunner()
         self.vault_reader = FakeVaultReader()
+        self._tmpdir = tempfile.mkdtemp()
+        gw_dir = os.path.join(self._tmpdir, "openshell", "gateways", "rosa-agent")
+        os.makedirs(gw_dir)
+        with open(os.path.join(gw_dir, "oidc_token.json"), "w") as f:
+            f.write('{"access_token": "fake-gateway-token"}')
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
 
     def test_create_new_provider(self):
         """When profile and provider don't exist, uses import and create."""
@@ -807,6 +816,29 @@ class TestProvisionProvider(unittest.TestCase):
         self.assertGreaterEqual(len(create_calls), 1)
         self.assertEqual(create_calls[0]["env"].get("OPENSHELL_TOKEN"), "test-token-xyz")
 
+    def test_pin_gateway_token_missing_fails(self):
+        """pin_gateway_token with missing token file fails the provider."""
+        prov = _provider_by_name(self.desc, "rosa-agent-openshell")
+        self.runner.responses["profile export"] = Exception("provider profile 'unknown' not found")
+        self.runner.responses["provider get"] = _not_found_then_ok
+
+        with tempfile.TemporaryDirectory() as tmp:
+            # No token file created — config_dir points to empty dir
+            profile_path = os.path.join(tmp, "base", "provider-profiles", "openshell.yaml")
+            os.makedirs(os.path.dirname(profile_path), exist_ok=True)
+            with open(profile_path, "w") as f:
+                f.write("id: openshell\n")
+
+            result = pp.provision_one_provider(
+                prov, self.vault, self.gateway,
+                runner=self.runner, vault_reader=self.vault_reader,
+                base_dir=os.path.join(tmp, "base"),
+                config_dir=tmp,
+            )
+
+        self.assertFalse(result.success)
+        self.assertIn("openshell-gateway", result.error)
+
     def test_refresh_configure_and_rotate(self):
         """Vertex provider runs configure then rotate."""
         prov = _provider_by_name(self.desc, "rosa-agent-vertex")
@@ -894,6 +926,7 @@ class TestProvisionProvider(unittest.TestCase):
         results = pp.provision_all(
             self.desc, self.gateway,
             runner=self.runner, vault_reader=self.vault_reader,
+            config_dir=self._tmpdir,
         )
         self.assertEqual(len(results), 5)
 
@@ -920,6 +953,7 @@ class TestProvisionProvider(unittest.TestCase):
         results = pp.provision_all(
             self.desc, self.gateway,
             runner=self.runner, vault_reader=self.vault_reader,
+            config_dir=self._tmpdir,
         )
         exit_code = pp.format_summary(results)
         self.assertNotEqual(exit_code, 0)
@@ -932,6 +966,7 @@ class TestProvisionProvider(unittest.TestCase):
         results = pp.provision_all(
             self.desc, self.gateway,
             runner=self.runner, vault_reader=self.vault_reader,
+            config_dir=self._tmpdir,
         )
         exit_code = pp.format_summary(results)
         self.assertEqual(exit_code, 0)
@@ -1075,6 +1110,25 @@ class TestOnlyValidation(unittest.TestCase):
         with self.assertRaises(ValueError) as ctx:
             pp.format_dry_run(self.desc, "rosa-agent", only="rosa-agent-nonexistent")
         self.assertIn("rosa-agent-nonexistent", str(ctx.exception))
+
+
+class TestNotFoundPattern(unittest.TestCase):
+    """Test _is_not_found rejects unrelated 'not found' messages."""
+
+    def test_rejects_gateway_not_found(self):
+        self.assertFalse(pp._is_not_found('gateway "rosa-agent" not found'))
+
+    def test_rejects_command_not_found(self):
+        self.assertFalse(pp._is_not_found("openshellctl: command not found"))
+
+    def test_rejects_file_not_found(self):
+        self.assertFalse(pp._is_not_found("file not found: /tmp/x.yaml"))
+
+    def test_matches_provider_quoted(self):
+        self.assertTrue(pp._is_not_found('provider "rosa-agent-github" not found'))
+
+    def test_matches_provider_profile_quoted(self):
+        self.assertTrue(pp._is_not_found("provider profile 'github' not found"))
 
 
 if __name__ == "__main__":
