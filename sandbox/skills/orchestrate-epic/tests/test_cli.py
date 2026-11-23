@@ -80,16 +80,22 @@ class SandboxNameCliTests(unittest.TestCase):
 
 
 class SandboxCreateArgsCliTests(unittest.TestCase):
+    _REQUIRED_ARGS = [
+        "sandbox-create-args",
+        "--name", "mcs-278",
+        "--template", "/tmp/keep.yaml",
+        "--prompt", "/implement-ticket MCS-278",
+        "--run-id", "epic-1-202611231430",
+        "--epic", "EPIC-1",
+        "--ticket", "MCS-278",
+        "--type", "implementation",
+    ]
+
     def test_outputs_json_args(self):
         old_stdout = sys.stdout
         sys.stdout = io.StringIO()
         try:
-            code = run([
-                "sandbox-create-args",
-                "--name", "mcs-278",
-                "--template", "/tmp/keep.yaml",
-                "--prompt", "/implement-ticket MCS-278",
-            ])
+            code = run(self._REQUIRED_ARGS)
             output = json.loads(sys.stdout.getvalue())
         finally:
             sys.stdout = old_stdout
@@ -97,6 +103,70 @@ class SandboxCreateArgsCliTests(unittest.TestCase):
         self.assertIn("sandbox", output)
         self.assertIn("create", output)
         self.assertIn("mcs-278", output)
+
+    def test_contains_expected_label_pairs(self):
+        old_stdout = sys.stdout
+        sys.stdout = io.StringIO()
+        try:
+            code = run(self._REQUIRED_ARGS)
+            output = json.loads(sys.stdout.getvalue())
+        finally:
+            sys.stdout = old_stdout
+        self.assertEqual(code, 0)
+        self.assertIn("--label", output)
+        self.assertIn("project=rosa-agent", output)
+        self.assertIn("run-id=epic-1-202611231430", output)
+        self.assertIn("ticket=mcs-278", output)
+
+    def test_missing_run_id_exits_2(self):
+        with self.assertRaises(SystemExit) as ctx:
+            run([
+                "sandbox-create-args",
+                "--name", "mcs-278",
+                "--template", "/tmp/keep.yaml",
+                "--prompt", "test",
+                "--epic", "EPIC-1",
+                "--ticket", "MCS-278",
+                "--type", "implementation",
+            ])
+        self.assertEqual(ctx.exception.code, 2)
+
+    def test_extra_label_no_equals_exits(self):
+        old_stderr = sys.stderr
+        sys.stderr = io.StringIO()
+        try:
+            code = run(self._REQUIRED_ARGS + ["--label", "bad"])
+            stderr_output = sys.stderr.getvalue()
+        finally:
+            sys.stderr = old_stderr
+        self.assertEqual(code, 1)
+        self.assertIn("error:", stderr_output)
+
+
+class RunIdCliTests(unittest.TestCase):
+    def test_outputs_run_id(self):
+        import re
+
+        old_stdout = sys.stdout
+        sys.stdout = io.StringIO()
+        try:
+            code = run(["run-id", "--epic", "EPIC-1"])
+            output = sys.stdout.getvalue().strip()
+        finally:
+            sys.stdout = old_stdout
+        self.assertEqual(code, 0)
+        self.assertRegex(output, r"^[a-z0-9-]+-\d{12}$")
+
+    def test_lowercases_epic(self):
+        old_stdout = sys.stdout
+        sys.stdout = io.StringIO()
+        try:
+            code = run(["run-id", "--epic", "ROSAENG-123"])
+            output = sys.stdout.getvalue().strip()
+        finally:
+            sys.stdout = old_stdout
+        self.assertEqual(code, 0)
+        self.assertTrue(output.startswith("rosaeng-123-"))
 
 
 class DetectStuckCliTests(unittest.TestCase):

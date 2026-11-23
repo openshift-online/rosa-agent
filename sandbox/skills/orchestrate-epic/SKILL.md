@@ -22,7 +22,8 @@ Subcommands:
 
 - `filter-actionable` — pipe a Jira search response, get actionable stories
 - `sandbox-name <KEY> [--suffix fixup]` — derive a valid sandbox name
-- `sandbox-create-args --name N --template T --prompt P [--model M]` — build args
+- `sandbox-create-args --name N --template T --prompt P --run-id R --epic E --ticket K --type T [--model M] [--environment E] [--label K=V ...]` — build args with cost-tracking labels
+- `run-id --epic E` — generate a unique run ID for this orchestration run
 - `detect-stuck --type nit|fixup|implementation --elapsed-minutes N` — stuck check
 - `epic-comment --repo owner/repo` — pipe merged stories JSON, get wiki comment
 - `assignee-payload --account-id ID` — Jira assignee payload
@@ -45,9 +46,35 @@ Subcommands:
 5. `gh` CLI for PR monitoring
 6. The epic key that defines the scope
 
+## Labels
+
+Every child sandbox MUST carry cost-tracking labels. The `_run_sandbox`
+wrapper (Phase 1) applies them automatically via the `sandbox-create-args`
+helper. Never bypass this.
+
+| Key | Value | Source |
+| --- | --- | --- |
+| `project` | `rosa-agent` | Fixed |
+| `workload` | `orchestrate-epic` | Fixed |
+| `owner` | `sd-sre-platform` | Fixed |
+| `environment` | `test` (default) | Per run (`--environment`) |
+| `run-id` | `<epic>-<YYYYmmddHHMM>` | Generated once in Phase 0 |
+| `epic` | `<epic key, lowercase>` | Per run |
+| `ticket` | `<ticket key, lowercase>` | Per child |
+| `sandbox-type` | `implementation\|fixup\|nit\|rebase` | Per child |
+
+Additional labels can be passed via `--label key=value` but cannot
+override the base or per-child keys.
+
 ## Phase 0 — Discovery
 
-1. **Fetch epic children.** Use the Jira v3 search endpoint (v2 is removed):
+1. **Generate run ID.** Create once and reuse for every child sandbox in this run:
+
+   ```shell
+   RUN_ID="$(python3 -m orchestrate_epic run-id --epic <EPIC>)"
+   ```
+
+2. **Fetch epic children.** Use the Jira v3 search endpoint (v2 is removed):
 
    ```shell
    jira "$JB/rest/api/3/search/jql?jql=%22Epic+Link%22+%3D+<EPIC>&fields=summary,status,issuetype"
@@ -56,7 +83,7 @@ Subcommands:
    Pipe the result into `python3 -m orchestrate_epic filter-actionable` to
    get the actionable stories (filters out Closed and Spike cards).
 
-2. **Discover the active sprint** (for adding cards later):
+3. **Discover the active sprint** (for adding cards later):
 
    ```shell
    jira "$JB/rest/agile/1.0/board?projectKeyOrId=<PROJECT>&type=scrum"
@@ -64,33 +91,45 @@ Subcommands:
    jira "$JB/rest/agile/1.0/board/<boardId>/sprint?state=active"
    ```
 
-3. **Discover transition IDs** if not already known:
+4. **Discover transition IDs** if not already known:
 
    ```shell
    jira "$JB/rest/api/2/issue/<ANY-KEY>/transitions"
    ```
 
-4. **Validate scope.** Each card should have enough detail for autonomous
+5. **Validate scope.** Each card should have enough detail for autonomous
    implementation. If a card is too sparse, flag it for human enrichment —
    do NOT launch a sandbox for it.
 
 ## Phase 1 — Parallel implementation
 
+Define the `_run_sandbox` wrapper once per session. All sandbox creation
+MUST go through this function to ensure cost-tracking labels are applied:
+
+```shell
+_run_sandbox() {  # usage: _run_sandbox <KEY> <type> <prompt> [name-suffix]
+  local key=$1 type=$2 prompt=$3 suffix=${4:-}
+  local name
+  name=$(python3 -m orchestrate_epic sandbox-name "$key" ${suffix:+--suffix "$suffix"}) || return 1
+  local -a args
+  mapfile -t args < <(python3 -m orchestrate_epic sandbox-create-args \
+    --name "$name" --template "$TEMPLATE" --prompt "$prompt" --model "$MODEL" \
+    --run-id "$RUN_ID" --epic "$EPIC" --ticket "$key" --type "$type" | jq -r '.[]') || return 1
+  OPENSHELL_VAULT_KV_MOUNT=osd-sre OPENSHELL_VAULT_KV_PATH=rosa-agent \
+  OPENSHELL_VAULT_FIELD_PREFIX=hypershell openshellctl "${args[@]}"
+}
+```
+
 For each actionable story, launch a sandbox:
 
 ```shell
-export OPENSHELL_VAULT_KV_MOUNT=osd-sre OPENSHELL_VAULT_KV_PATH=rosa-agent OPENSHELL_VAULT_FIELD_PREFIX=hypershell
-openshellctl sandbox create \
-  --name "$(python3 -m orchestrate_epic sandbox-name <KEY>)" \
-  -f <keep-alive-template> \
-  -p "NAME=$(python3 -m orchestrate_epic sandbox-name <KEY>)" \
-  -p "PROMPT=/implement-ticket <KEY>" \
-  --env "ANTHROPIC_MODEL=claude-opus-4-6" \
-  --detach --replace
+_run_sandbox <KEY> implementation "/implement-ticket <KEY>"
 ```
 
 ### Critical rules
 
+- **Never call `openshellctl sandbox create` directly — always `_run_sandbox`,
+  so cost-tracking labels are applied.**
 - **Use `-f` and `-p`**, not `--template` or `--set`.
 - **`--detach` blocks** until Ready phase. Run via `run_in_background`.
 - **Use the keep-alive template** (no `noKeep: true`) so completed sandboxes
@@ -106,7 +145,14 @@ openshellctl sandbox create \
 You MUST actively poll all running sandboxes — do NOT wait for the human
 to ask "status?":
 
-- Poll `openshellctl sandbox list` every 2-5 minutes
+- Poll only this run's sandboxes using the label selector:
+
+  ```shell
+  OPENSHELL_VAULT_KV_MOUNT=osd-sre OPENSHELL_VAULT_KV_PATH=rosa-agent \
+  OPENSHELL_VAULT_FIELD_PREFIX=hypershell \
+  openshellctl sandbox list --selector "run-id=$RUN_ID" --output json
+  ```
+
 - Use `openshellctl sandbox get <name> --output json` for structured status
 - When a sandbox completes, immediately check for new PRs
 - Track ALL sandboxes concurrently, not just the most recent
@@ -123,7 +169,14 @@ wait 2-3 minutes and recheck before assuming failure.
 When the human provides PR review feedback:
 
 1. Parse the feedback into blocking / should-fix / nit categories
-2. Launch a fixup sandbox with a **specific prompt** that includes:
+2. Launch a fixup sandbox via `_run_sandbox` with the matching type:
+
+   ```shell
+   _run_sandbox <KEY> fixup "<fixup prompt with PR#, branch, file:line refs>" fixup
+   _run_sandbox <KEY> nit "<nit prompt>" nits
+   ```
+
+   The prompt MUST include:
    - Exact PR number and branch name
    - Each fix with file:line references
    - "Push to existing branch, do NOT create a new PR"
@@ -131,8 +184,6 @@ When the human provides PR review feedback:
    - "If tests fail after 3 minutes, commit the code changes anyway"
 3. Include ALL nits — every code-touching nit must be addressed
 4. Design questions with concrete fixes: include them, don't defer
-
-Use `sandbox-name <KEY> --suffix fixup` (or `nits`, `rebase`) for the name.
 
 ## Phase 3 — Merge conflict coordination
 
@@ -145,6 +196,11 @@ Use `sandbox-name <KEY> --suffix fixup` (or `nits`, `rebase`) for the name.
 
    Values: `MERGEABLE|CONFLICTING`, `CLEAN|DIRTY|UNSTABLE|BLOCKED`
 3. For conflicting PRs, combine rebase + any pending fixups into ONE sandbox
+   via `_run_sandbox`:
+
+   ```shell
+   _run_sandbox <KEY> rebase "<rebase + fixup prompt>" rebase
+   ```
 4. **Draft PR gotcha**: `gh pr merge` fails on drafts. Run
    `gh pr ready <N> --repo <owner/repo>` first.
 
@@ -199,9 +255,17 @@ The comment uses Jira wiki markup (h2., ||table||, [text|url], (/)).
 
 ## Phase 5 — Cleanup
 
-1. Delete completed sandboxes — only those you launched (check your log)
-2. Never delete sandboxes with unfamiliar names
-3. `openshellctl sandbox delete <name>` (with vault env vars)
+1. List only this run's sandboxes:
+
+   ```shell
+   OPENSHELL_VAULT_KV_MOUNT=osd-sre OPENSHELL_VAULT_KV_PATH=rosa-agent \
+   OPENSHELL_VAULT_FIELD_PREFIX=hypershell \
+   openshellctl sandbox list --selector "run-id=$RUN_ID"
+   ```
+
+2. Delete completed sandboxes — only those you launched (filtered by run-id)
+3. Never delete sandboxes with unfamiliar names
+4. `openshellctl sandbox delete <name>` (with vault env vars)
 
 ## Stuck sandbox rules
 

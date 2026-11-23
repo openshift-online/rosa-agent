@@ -10,7 +10,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from . import __version__
 from .jira_models import (
@@ -25,9 +25,12 @@ from .jira_models import (
     parse_epic_children,
 )
 from .sandbox_models import (
+    SandboxLabelError,
     SandboxNameError,
     build_create_args,
+    build_labels,
     detect_stuck,
+    make_run_id,
     sandbox_name,
     sandbox_name_suffixed,
 )
@@ -67,7 +70,32 @@ def build_parser() -> argparse.ArgumentParser:
     p_create.add_argument("--template", required=True)
     p_create.add_argument("--prompt", required=True)
     p_create.add_argument("--model", default=None)
+    p_create.add_argument("--run-id", required=True)
+    p_create.add_argument("--epic", required=True)
+    p_create.add_argument("--ticket", required=True)
+    p_create.add_argument(
+        "--type",
+        required=True,
+        dest="sandbox_type",
+        choices=["implementation", "fixup", "nit", "rebase"],
+    )
+    p_create.add_argument("--environment", default="test")
+    p_create.add_argument(
+        "--label",
+        action="append",
+        default=[],
+        dest="extra_labels",
+        metavar="KEY=VALUE",
+        help="Extra label key=value (repeatable).",
+    )
     p_create.set_defaults(func=cmd_sandbox_create_args)
+
+    p_run_id = sub.add_parser(
+        "run-id",
+        help="Generate a unique run ID for an epic orchestration run.",
+    )
+    p_run_id.add_argument("--epic", required=True)
+    p_run_id.set_defaults(func=cmd_run_id)
 
     p_stuck = sub.add_parser(
         "detect-stuck",
@@ -137,14 +165,45 @@ def cmd_sandbox_name(args: argparse.Namespace) -> int:
     return 0
 
 
+def _parse_extra_labels(raw: List[str]) -> Dict[str, str]:
+    """Parse repeatable --label KEY=VALUE strings into a dict."""
+    extra: Dict[str, str] = {}
+    for item in raw:
+        if "=" not in item:
+            raise SandboxLabelError(
+                f"invalid --label '{item}': must be KEY=VALUE"
+            )
+        k, v = item.split("=", 1)
+        extra[k] = v
+    return extra
+
+
 def cmd_sandbox_create_args(args: argparse.Namespace) -> int:
+    extra = _parse_extra_labels(args.extra_labels)
+    labels = build_labels(
+        run_id=args.run_id,
+        epic_key=args.epic,
+        ticket_key=args.ticket,
+        sandbox_type=args.sandbox_type,
+        environment=args.environment,
+        extra=extra or None,
+    )
     result = build_create_args(
         name=args.name,
         template_path=args.template,
         prompt=args.prompt,
+        labels=labels,
         model=args.model,
     )
     print(json.dumps(result))
+    return 0
+
+
+def cmd_run_id(args: argparse.Namespace) -> int:
+    from datetime import datetime, timezone
+
+    run_id = make_run_id(args.epic, datetime.now(timezone.utc))
+    print(run_id)
     return 0
 
 
@@ -190,7 +249,7 @@ def run(argv: Optional[List[str]] = None) -> int:
         return 1
     try:
         return args.func(args)
-    except (JiraPayloadError, SandboxNameError) as exc:
+    except (JiraPayloadError, SandboxLabelError, SandboxNameError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
 
