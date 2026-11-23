@@ -114,6 +114,9 @@ openshell provider profile lint -f provider-profiles/<profile>.yaml
 openshell provider profile import -f provider-profiles/<profile>.yaml
 ```
 
+All providers are provisioned from a single descriptor (`provider-profiles/providers.yaml`) via
+`make providers`. See `docs/hypershell-providers.md` for the manual runbook.
+
 Currently there are four profiles:
 
 * **`google-vertex-ai.yaml`** — Google Vertex AI inference for Claude Code. Based on the stock
@@ -146,9 +149,29 @@ Currently there are four profiles:
     why the read/write split is enforced entirely by this profile's allow-list rather than by
     PagerDuty itself.
 
-* **`openshell.yaml`** — Self-service sandbox creation for sandboxed agents. See the
-    [OpenShell (self-service sandboxes)](#openshell-self-service-sandboxes) section below for the
-    full scope, blast radius, and provisioning steps.
+* **`openshell.yaml`** — Self-service sandbox creation for sandboxed agents. Lets a sandboxed agent
+    mint its own gateway token via OIDC `client_credentials` and create child sandboxes. The OIDC
+    client secret is bound only to the Keycloak token endpoint; the gateway control-plane is L4
+    (gRPC requires ALPN h2). Authorization is enforced server-side by the service account's role.
+
+### Data-driven provider provisioning
+
+All five credentialed providers are described in `provider-profiles/providers.yaml` — a single
+descriptor with Vault field coordinates, credential shapes, and refresh strategies. Provisioning is
+a one-command operation:
+
+```bash
+# Prerequisites: VAULT_ADDR set, valid Vault session, openshell + openshellctl on PATH
+make providers              # provision all five providers
+make provider PROVIDER=rosa-agent-github  # provision one
+make providers-dry-run      # preview commands without executing
+make check-providers        # validate the descriptor (also wired into make lint)
+```
+
+The Python driver (`hack/provision_providers.py`) handles: profile lint + import-or-update with
+`resource_version` splicing, provider create-or-update, refresh configure + rotate for OAuth and
+SA-JWT providers, and per-provider failure isolation. Secrets are read from Vault into environment
+variables at runtime and never appear in argv or Make output.
 
 ### HyperShell Service Account
 
@@ -211,13 +234,9 @@ openshellctl sandbox create \
 * Fine-grainted tokens are preferred and need only `contents:read`, `issues:read&write` and `pull_request:read&write` but require approval by the ORG owners, and must be created in that org
 * Classic PAT tokens work out-of the box with `repo` permissions (top-level check-box).  We're using this as a workaround until a fine-grained token is approved
   
-Hypershell Provider config:
-
-```bash
-openshell provider create --name rosa-agent-github \
-  --type github \
-  --credential GITHUB_TOKEN
-```
+Provisioned via `make providers` or `make provider PROVIDER=rosa-agent-github`.
+See `provider-profiles/providers.yaml` for the Vault field coordinates and
+`docs/hypershell-providers.md` for the manual runbook.
 
 ## Jira
 

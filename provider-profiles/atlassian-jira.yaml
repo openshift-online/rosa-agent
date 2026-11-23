@@ -14,14 +14,20 @@
 #   explicit rules, if a real need shows up — avoid widening POST/PUT
 #   with a catch-all, since that's where real damage is possible.
 #
-# Import:
+# Provisioning (data-driven, idempotent):
+#   make providers                            # all five providers
+#   make provider PROVIDER=rosa-agent-jira    # just this one
+#   make providers-dry-run                    # preview commands
+#
+# Manual lint and import:
 #   openshell -g <gateway> profile lint   --file provider-profiles/atlassian-jira.yaml
 #   openshell -g <gateway> profile import --file provider-profiles/atlassian-jira.yaml --global
 #
-# Create the provider. JIRA_API_TOKEN is the only real secret this profile
+# Manual provider create. JIRA_API_TOKEN is the only real secret this profile
 # manages — it becomes an opaque, proxy-resolved placeholder inside the
 # sandbox (openshell:resolve:env :*), never a plaintext value:
-#   openshell -g <gateway> provider create --name rosa-agent-jira \
+#   JIRA_API_TOKEN="$(vault kv get -field=jira-token osd-sre/rosa-agent)" \
+#     openshellctl -g <gateway> provider create --name rosa-agent-jira \
 #       --type atlassian-jira --global-profile --credential JIRA_API_TOKEN
 #
 # --global-profile is required when the profile was imported with --global.

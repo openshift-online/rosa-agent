@@ -12,25 +12,36 @@ Nothing here is reconciled. OpenShell providers are not a HyperShell Kind, so
 they cannot live in `.hypershell/`; the profile YAML in `provider-profiles/` is
 the source of truth and these commands put it on a gateway.
 
-## Scripted provisioning (openshell profile)
+## Data-driven provisioning (all providers)
 
-For the `openshell` provider profile specifically, `make openshell-provider` is the
-scripted, idempotent alternative to the manual steps in the sections below. It handles
-Vault login, gateway registration, profile lint + import-or-update, and provider
-create-or-update in one shot. The OIDC secret is read from Vault into env at runtime;
-it never hits Make output or argv. Prerequisites and usage:
+`make providers` provisions all five credentialed providers idempotently from
+`provider-profiles/providers.yaml`. It reads credentials from Vault, handles
+profile lint + import-or-update, provider create-or-update, and refresh
+configure + rotate for providers that need it (Vertex SA-JWT, PagerDuty
+OAuth). Prerequisites:
 
 ```bash
 export VAULT_ADDR=...
-export OPENSHELL_VAULT_KV_MOUNT=osd-sre
-export OPENSHELL_VAULT_KV_PATH=rosa-agent
-export OPENSHELL_VAULT_FIELD_PREFIX=hypershell
-
-make openshell-provider
+# Ensure a valid Vault session (or run: vault login -method=oidc)
+make providers
 ```
 
-The sections below describe the underlying steps `make openshell-provider` automates,
-and remain the reference for manual intervention, rollback, or applying other profiles.
+To provision a single provider, preview commands, or validate the descriptor:
+
+```bash
+make provider PROVIDER=rosa-agent-github
+make providers-dry-run
+make check-providers    # also wired into make lint
+```
+
+The Python driver (`hack/provision_providers.py`) reads Vault-sourced secrets
+into environment variables at runtime — they never appear in Make output, argv,
+or any file. Per-provider failures are isolated: a failure in one provider does
+not prevent the others from being provisioned.
+
+The sections below describe the underlying manual steps that `make providers`
+automates, and remain the reference for manual intervention, rollback, or
+debugging.
 
 ## Three CLIs, and which one to reach for
 
@@ -482,6 +493,7 @@ intuition across. For `graphql`, `read-write` is `query` plus `mutation`; for
 
 | Provider name | Profile | Credential source |
 | --- | --- | --- |
+| `rosa-agent-openshell` | `openshell` | OIDC client secret from Vault |
 | `rosa-agent-vertex` | `google-vertex-ai` | Service-account key from Vault; rotated via refresh strategy |
 | `rosa-agent-github` | `github` | Classic PAT from Vault (fine-grained pending org approval) |
 | `rosa-agent-jira` | `atlassian-jira` | API token from Vault |

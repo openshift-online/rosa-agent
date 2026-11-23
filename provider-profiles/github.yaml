@@ -23,16 +23,18 @@
 #      The agent pushes only to its own fork namespace; allowing receive-pack
 #      on ** would permit pushing to any repo the token can reach.
 #
-# Lint and import. `openshell provider profile ...` also works -- it is a
-# registered alias for `openshell profile ...` -- but the short form is the
-# canonical one:
+# Provisioning (data-driven, idempotent):
+#   make providers                            # all five providers
+#   make provider PROVIDER=rosa-agent-github  # just this one
+#   make providers-dry-run                    # preview commands
+#
+# Manual lint and import:
 #   openshell -g <gateway> profile lint   --file provider-profiles/github.yaml
 #   openshell -g <gateway> profile import --file provider-profiles/github.yaml --global
 #
-# Create the provider. The credential is read from the environment so the token
-# never appears in a command line or shell history.
+# Manual provider create (credential read from env, never in argv):
 #   GH_TOKEN="$(vault kv get -field=github-token osd-sre/rosa-agent)" \
-#     openshell -g <gateway> provider create --name rosa-agent-github \
+#     openshellctl -g <gateway> provider create --name rosa-agent-github \
 #       --type github --global-profile --credential GH_TOKEN
 #
 # Use the github-token field: it holds the classic PAT with full repo scope,
