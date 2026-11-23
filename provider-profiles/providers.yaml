@@ -60,6 +60,7 @@ providers:
         - key: client_secret
           vault_field: pagerduty-oauth-client-secret
           secret: true
+      rotate_after_configure: true
 
   - name: rosa-agent-vertex
     profile: google-vertex-ai

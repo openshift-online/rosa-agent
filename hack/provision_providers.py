@@ -421,14 +421,13 @@ def build_provider_argv(prov, vault, gateway, provider_exists=False):
             }
             if cred.get("json_path"):
                 env_plan[key]["json_path"] = cred["json_path"]
-        elif "literal" in cred:
+        elif "literal" in cred and not provider_exists:
             cmd.extend(["--credential", f"{key}={cred['literal']}"])
 
-    if not provider_exists:
-        for cfg in config:
-            key = cfg["key"]
-            if "literal" in cfg:
-                cmd.extend(["--config", f"{key}={cfg['literal']}"])
+    for cfg in config:
+        key = cfg["key"]
+        if "literal" in cfg:
+            cmd.extend(["--config", f"{key}={cfg['literal']}"])
 
     if prov.get("pin_gateway_token"):
         env_plan["OPENSHELL_TOKEN"] = {"source": "token_file"}
@@ -822,7 +821,13 @@ def provision_one_provider(prov, vault, gateway, runner=None, vault_reader=None,
                     resolved = [
                         _substitute_env_refs(arg, refresh_env) for arg in cmd
                     ]
-                    runner.run(resolved, env=refresh_env)
+                    try:
+                        runner.run(resolved, env=refresh_env)
+                    except Exception as configure_err:
+                        if "already configured" in str(configure_err).lower():
+                            pass
+                        else:
+                            raise
 
         return ProvisionResult(name, success=True)
 

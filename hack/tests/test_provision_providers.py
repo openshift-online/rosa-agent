@@ -67,6 +67,7 @@ MINIMAL_YAML = textwrap.dedent("""\
             - key: client_secret
               vault_field: pagerduty-oauth-client-secret
               secret: true
+          rotate_after_configure: true
 
       - name: rosa-agent-vertex
         profile: google-vertex-ai
@@ -470,6 +471,26 @@ class TestBuildProviderArgv(unittest.TestCase):
                         f"Vault field value leaked into argv for {prov['name']}"
                     )
 
+    def test_update_no_literal_credential(self):
+        """Update argv must not contain KEY=literal — it would overwrite live tokens."""
+        prov = _provider_by_name(self.desc, "rosa-agent-pagerduty")
+        argv, _ = pp.build_provider_argv(
+            prov, self.vault, self.gateway, provider_exists=True
+        )
+        cmd = " ".join(argv[0])
+        self.assertNotIn("PAGERDUTY_ACCESS_TOKEN=placeholder", cmd,
+                         "Literal credential must not appear on update")
+
+    def test_update_no_config_drift(self):
+        """Update argv includes --config flags to correct drift."""
+        prov = _provider_by_name(self.desc, "rosa-agent-vertex")
+        argv, _ = pp.build_provider_argv(
+            prov, self.vault, self.gateway, provider_exists=True
+        )
+        cmd = " ".join(argv[0])
+        self.assertIn("--config", cmd)
+        self.assertIn("VERTEX_AI_PROJECT_ID=rosa-general", cmd)
+
     def test_openshell_pin_gateway_token(self):
         """Openshell provider sets pin_gateway_token env entry."""
         prov = _provider_by_name(self.desc, "rosa-agent-openshell")
@@ -516,11 +537,15 @@ class TestBuildRefreshArgv(unittest.TestCase):
         sme_idx = cmd.index("--secret-material-env")
         self.assertIn("client_secret=", cmd[sme_idx + 1])
 
-    def test_pagerduty_no_rotate(self):
-        """PagerDuty has no rotate_after_configure."""
+    def test_pagerduty_rotates(self):
+        """PagerDuty has rotate_after_configure: true."""
         prov = _provider_by_name(self.desc, "rosa-agent-pagerduty")
-        _, _, do_rotate = pp.build_refresh_argv(prov, self.vault, self.gateway)
-        self.assertFalse(do_rotate)
+        result = pp.build_refresh_argv(prov, self.vault, self.gateway)
+        self.assertIsNotNone(result)
+        argv, _, do_rotate = result
+        self.assertTrue(do_rotate)
+        self.assertEqual(len(argv), 2)
+        self.assertIn("rotate", argv[1])
 
     def test_vertex_rotate_after_configure(self):
         """Vertex has rotate_after_configure: true."""
@@ -849,6 +874,22 @@ class TestProvisionProvider(unittest.TestCase):
         self.assertIsNotNone(configure_idx, f"No configure call found in: {cmds}")
         self.assertIsNotNone(rotate_idx, f"No rotate call found in: {cmds}")
         self.assertLess(configure_idx, rotate_idx, "configure must precede rotate")
+
+    def test_refresh_already_configured_continues(self):
+        """Second refresh configure succeeds even if CLI says 'already configured'."""
+        prov = _provider_by_name(self.desc, "rosa-agent-pagerduty")
+        self.runner.responses["profile export"] = Exception("not found")
+        self.runner.responses["provider get"] = Exception("not found")
+        self.runner.responses["refresh configure"] = Exception(
+            "already configured for credential key PAGERDUTY_ACCESS_TOKEN"
+        )
+
+        result = pp.provision_one_provider(
+            prov, self.vault, self.gateway,
+            runner=self.runner, vault_reader=self.vault_reader,
+        )
+        self.assertTrue(result.success,
+                        f"Should succeed despite 'already configured': {result.error}")
 
     def test_nonsecret_vault_refresh_material_resolved(self):
         """Non-secret vault-sourced refresh material is resolved into argv."""
