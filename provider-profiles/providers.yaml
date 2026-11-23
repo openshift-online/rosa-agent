@@ -1,0 +1,86 @@
+# Data-driven provider descriptor for rosa-agent gateways.
+#
+# Each entry describes one provider: its profile, credentials (with Vault
+# field coordinates — never secret values), and optional refresh strategy.
+#
+# Usage:
+#   make providers              # provision all five providers
+#   make provider PROVIDER=rosa-agent-github  # provision one
+#   make providers-dry-run      # show argv sequences without executing
+#   make check-providers        # validate this file (also wired into make lint)
+#
+# Vault field names must match `vault kv get -format=json osd-sre/rosa-agent`.
+# Human verification is required before first use on a new gateway.
+#
+# Ticket: MCS-1484
+
+vault:
+  kv_mount: osd-sre
+  kv_path: rosa-agent
+
+providers:
+  - name: rosa-agent-openshell
+    profile: openshell
+    profile_file: provider-profiles/openshell.yaml
+    global_profile: true
+    credentials:
+      - key: OPENSHELL_OIDC_CLIENT_SECRET
+        vault_field: hypershell-oidc-client-secret
+    pin_gateway_token: true
+
+  - name: rosa-agent-github
+    profile: github
+    profile_file: provider-profiles/github.yaml
+    global_profile: true
+    credentials:
+      - key: GH_TOKEN
+        vault_field: github-token
+
+  - name: rosa-agent-jira
+    profile: atlassian-jira
+    profile_file: provider-profiles/atlassian-jira.yaml
+    global_profile: true
+    credentials:
+      - key: JIRA_API_TOKEN
+        vault_field: jira-token
+
+  - name: rosa-agent-pagerduty
+    profile: pagerduty
+    profile_file: provider-profiles/pagerduty.yaml
+    global_profile: true
+    credentials:
+      - key: PAGERDUTY_ACCESS_TOKEN
+        literal: placeholder
+    refresh:
+      strategy: oauth2-client-credentials
+      credential_key: PAGERDUTY_ACCESS_TOKEN
+      material:
+        - key: client_id
+          vault_field: pagerduty-oauth-client-id
+        - key: client_secret
+          vault_field: pagerduty-oauth-client-secret
+          secret: true
+
+  - name: rosa-agent-vertex
+    profile: google-vertex-ai
+    profile_file: provider-profiles/google-vertex-ai.yaml
+    global_profile: true
+    credentials:
+      - key: GOOGLE_VERTEX_AI_SERVICE_ACCOUNT_TOKEN
+        literal: placeholder
+    config:
+      - key: VERTEX_AI_PROJECT_ID
+        literal: rosa-general
+      - key: VERTEX_AI_REGION
+        literal: global
+    refresh:
+      strategy: google-service-account-jwt
+      credential_key: GOOGLE_VERTEX_AI_SERVICE_ACCOUNT_TOKEN
+      material:
+        - key: client_email
+          literal: rosa-agent@rosa-general.iam.gserviceaccount.com
+        - key: private_key
+          vault_field: google-rosa-general-service-account-keyfile
+          json_path: .private_key
+          secret: true
+      rotate_after_configure: true
