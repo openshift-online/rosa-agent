@@ -321,3 +321,250 @@ def validate_descriptor(desc, base_dir="."):
                         )
 
     return errors
+
+
+# ---------------------------------------------------------------------------
+# Argv builders — pure functions, no I/O
+# ---------------------------------------------------------------------------
+
+def build_profile_argv(prov, gateway, profile_exists=False):
+    """Build argv sequences for profile lint + import/update.
+
+    Returns a list of argv lists (each is a command to run sequentially).
+    When profile_exists is True, the update command includes a
+    {resource_version} placeholder that the runner splices in at execution
+    time from a fresh profile export.
+    """
+    profile_file = prov["profile_file"]
+    profile_id = prov["profile"]
+    global_flag = prov.get("global_profile", False)
+
+    lint_cmd = [
+        "openshell", "-g", gateway,
+        "profile", "lint", "--file", profile_file,
+    ]
+
+    if profile_exists:
+        update_cmd = [
+            "openshell", "-g", gateway,
+            "profile", "update", profile_id, "--file",
+            "{tmp_file_with_resource_version}",
+        ]
+        if global_flag:
+            update_cmd.append("--global")
+        update_cmd.append("{resource_version}")
+        return [lint_cmd, update_cmd]
+    else:
+        import_cmd = [
+            "openshell", "-g", gateway,
+            "profile", "import", "--file", profile_file,
+        ]
+        if global_flag:
+            import_cmd.append("--global")
+        return [lint_cmd, import_cmd]
+
+
+def _vault_read_command(vault, field, json_path=None):
+    """Build a vault kv get command string for an env_plan entry."""
+    cmd = (
+        f"vault kv get -mount={vault['kv_mount']} "
+        f"-field={field} {vault['kv_path']}"
+    )
+    if json_path:
+        cmd = (
+            f"vault kv get -mount={vault['kv_mount']} -format=json "
+            f"{vault['kv_path']} | python3 -c "
+            f"\"import sys,json; print(json.load(sys.stdin)"
+            f"['data']['data']['{field}']{_python_json_path(json_path)})\""
+        )
+    return cmd
+
+
+def _python_json_path(jp):
+    """Convert a simple json_path like '.private_key' to Python dict access."""
+    parts = jp.lstrip(".").split(".")
+    return "".join(f"['{p}']" for p in parts if p)
+
+
+def build_provider_argv(prov, vault, gateway, provider_exists=False):
+    """Build argv sequences for provider create/update.
+
+    Returns (argv_list, env_plan) where env_plan maps env var names to
+    dicts describing how to populate them at runtime:
+      {"command": "vault kv get ...", "json_path": ".key"} for Vault-sourced
+      {"source": "token_file"} for gateway token pinning
+    """
+    name = prov["name"]
+    profile_id = prov["profile"]
+    global_flag = prov.get("global_profile", False)
+    creds = prov.get("credentials", [])
+    config = prov.get("config", [])
+    env_plan = {}
+
+    if provider_exists:
+        cmd = ["openshellctl", "-g", gateway, "provider", "update", name]
+    else:
+        cmd = [
+            "openshellctl", "-g", gateway, "provider", "create",
+            "--name", name, "--type", profile_id,
+        ]
+        if global_flag:
+            cmd.append("--global-profile")
+
+    for cred in creds:
+        key = cred["key"]
+        if cred.get("vault_field"):
+            cmd.extend(["--credential", key])
+            env_plan[key] = {
+                "command": _vault_read_command(vault, cred["vault_field"],
+                                              cred.get("json_path")),
+            }
+            if cred.get("json_path"):
+                env_plan[key]["json_path"] = cred["json_path"]
+        elif "literal" in cred:
+            cmd.extend(["--credential", f"{key}={cred['literal']}"])
+
+    if not provider_exists:
+        for cfg in config:
+            key = cfg["key"]
+            if "literal" in cfg:
+                cmd.extend(["--config", f"{key}={cfg['literal']}"])
+
+    if prov.get("pin_gateway_token"):
+        env_plan["OPENSHELL_TOKEN"] = {"source": "token_file"}
+
+    return [cmd], env_plan
+
+
+def build_refresh_argv(prov, vault, gateway):
+    """Build argv sequences for refresh configure + optional rotate.
+
+    Returns None if no refresh config, otherwise
+    (argv_list, env_plan, do_rotate).
+    """
+    refresh = prov.get("refresh")
+    if not refresh:
+        return None
+
+    name = prov["name"]
+    cred_key = refresh["credential_key"]
+    strategy = refresh["strategy"]
+    materials = refresh.get("material", [])
+    do_rotate = bool(refresh.get("rotate_after_configure"))
+    env_plan = {}
+
+    configure_cmd = [
+        "openshell", "-g", gateway,
+        "provider", "refresh", "configure", name,
+        "--credential-key", cred_key,
+        "--strategy", strategy,
+    ]
+
+    for mat in materials:
+        key = mat["key"]
+        is_secret = mat.get("secret", False)
+
+        if is_secret:
+            env_var = f"_REFRESH_{key.upper()}"
+            configure_cmd.extend(["--secret-material-env", f"{key}={env_var}"])
+
+            if mat.get("vault_field"):
+                env_plan[env_var] = {
+                    "command": _vault_read_command(
+                        vault, mat["vault_field"], mat.get("json_path")
+                    ),
+                }
+                if mat.get("json_path"):
+                    env_plan[env_var]["json_path"] = mat["json_path"]
+        else:
+            if "literal" in mat:
+                configure_cmd.extend(["--material", f"{key}={mat['literal']}"])
+            elif mat.get("vault_field"):
+                env_var = f"_REFRESH_{key.upper()}"
+                configure_cmd.extend(["--material", f"{key}=${{{env_var}}}"])
+                env_plan[env_var] = {
+                    "command": _vault_read_command(vault, mat["vault_field"]),
+                }
+
+    argv_list = [configure_cmd]
+
+    if do_rotate:
+        rotate_cmd = [
+            "openshell", "-g", gateway,
+            "provider", "refresh", "rotate", name,
+            "--credential-key", cred_key,
+        ]
+        argv_list.append(rotate_cmd)
+
+    return argv_list, env_plan, do_rotate
+
+
+# ---------------------------------------------------------------------------
+# Dry-run formatting
+# ---------------------------------------------------------------------------
+
+def format_dry_run(desc, gateway, only=None):
+    """Format all argv sequences as a human-readable dry-run plan.
+
+    Shows both the "new" (import/create) and "existing" (update) paths.
+    Secrets appear as $ENVVAR_NAME.
+    """
+    vault = desc["vault"]
+    lines = []
+
+    for prov in desc["providers"]:
+        if only and prov["name"] != only:
+            continue
+
+        lines.append(f"=== {prov['name']} (profile: {prov['profile']}) ===")
+        lines.append("")
+
+        for exists_label, exists_flag in [("new", False), ("existing", True)]:
+            lines.append(f"  --- profile {exists_label} ---")
+            profile_argv = build_profile_argv(prov, gateway, profile_exists=exists_flag)
+            for cmd in profile_argv:
+                lines.append(f"    {_format_cmd(cmd)}")
+
+            lines.append(f"  --- provider {exists_label} ---")
+            prov_argv, env_plan = build_provider_argv(
+                prov, vault, gateway, provider_exists=exists_flag
+            )
+            if env_plan:
+                lines.append("    env:")
+                for var, plan in sorted(env_plan.items()):
+                    if "command" in plan:
+                        lines.append(f"      ${var}=$({plan['command']})")
+                    elif plan.get("source") == "token_file":
+                        lines.append(f"      ${var}=$(read from gateway token file)")
+            for cmd in prov_argv:
+                lines.append(f"    {_format_cmd(cmd)}")
+
+            lines.append("")
+
+        refresh_result = build_refresh_argv(prov, vault, gateway)
+        if refresh_result:
+            argv_list, env_plan, do_rotate = refresh_result
+            lines.append("  --- refresh ---")
+            if env_plan:
+                lines.append("    env:")
+                for var, plan in sorted(env_plan.items()):
+                    if "command" in plan:
+                        lines.append(f"      ${var}=$({plan['command']})")
+            for cmd in argv_list:
+                lines.append(f"    {_format_cmd(cmd)}")
+            lines.append("")
+
+        lines.append("")
+
+    return "\n".join(lines)
+
+
+def _format_cmd(argv):
+    """Format an argv list as a shell-like command string."""
+    parts = []
+    for arg in argv:
+        if " " in arg or "'" in arg or '"' in arg or "$" in arg:
+            parts.append(f'"{arg}"')
+        else:
+            parts.append(arg)
+    return " ".join(parts)

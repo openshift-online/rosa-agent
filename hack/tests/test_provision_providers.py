@@ -33,6 +33,7 @@ MINIMAL_YAML = textwrap.dedent("""\
         credentials:
           - key: OPENSHELL_OIDC_CLIENT_SECRET
             vault_field: hypershell-oidc-client-secret
+        pin_gateway_token: true
 
       - name: rosa-agent-github
         profile: github
@@ -325,6 +326,278 @@ class TestValidateDescriptor(unittest.TestCase):
         """)
         errors = self._validate(yaml)
         self.assertEqual(errors, [])
+
+
+# ---------------------------------------------------------------------------
+# Argv builder tests — AC3: dry-run shows all argv with $ENVVAR names
+# ---------------------------------------------------------------------------
+
+def _load_minimal():
+    """Load the minimal valid descriptor."""
+    with tempfile.TemporaryDirectory() as tmp:
+        path = _write_descriptor(tmp)
+        return pp.load_descriptor(path)
+
+
+def _provider_by_name(desc, name):
+    for p in desc["providers"]:
+        if p["name"] == name:
+            return p
+    raise KeyError(name)
+
+
+class TestBuildProfileArgv(unittest.TestCase):
+    """Profile import vs update argv sequences."""
+
+    def setUp(self):
+        self.desc = _load_minimal()
+        self.gateway = "rosa-agent"
+
+    def test_import_new_profile(self):
+        prov = _provider_by_name(self.desc, "rosa-agent-github")
+        argv = pp.build_profile_argv(prov, self.gateway, profile_exists=False)
+        self.assertEqual(len(argv), 2)
+        # First: lint
+        self.assertIn("lint", argv[0])
+        self.assertIn("--file", argv[0])
+        # Second: import
+        self.assertIn("import", argv[1])
+        self.assertIn("--global", argv[1])
+
+    def test_update_existing_profile(self):
+        prov = _provider_by_name(self.desc, "rosa-agent-github")
+        argv = pp.build_profile_argv(prov, self.gateway, profile_exists=True)
+        self.assertEqual(len(argv), 2)
+        self.assertIn("lint", argv[0])
+        self.assertIn("update", argv[1])
+        self.assertIn("{resource_version}", argv[1][-1])
+
+    def test_non_global_profile(self):
+        prov = _provider_by_name(self.desc, "rosa-agent-github")
+        prov = dict(prov, global_profile=False)
+        argv = pp.build_profile_argv(prov, self.gateway, profile_exists=False)
+        for cmd in argv:
+            self.assertNotIn("--global", cmd)
+
+
+class TestBuildProviderArgv(unittest.TestCase):
+    """Provider create vs update argv sequences."""
+
+    def setUp(self):
+        self.desc = _load_minimal()
+        self.vault = self.desc["vault"]
+        self.gateway = "rosa-agent"
+
+    def test_create_vault_sourced_credential(self):
+        """Vault-sourced credential uses bare --credential KEY (not KEY=VALUE)."""
+        prov = _provider_by_name(self.desc, "rosa-agent-github")
+        argv, env_plan = pp.build_provider_argv(
+            prov, self.vault, self.gateway, provider_exists=False
+        )
+        self.assertEqual(len(argv), 1)
+        cmd = argv[0]
+        self.assertIn("create", cmd)
+        self.assertIn("--credential", cmd)
+        # Bare KEY, not KEY=VALUE
+        cred_idx = cmd.index("--credential")
+        self.assertEqual(cmd[cred_idx + 1], "GH_TOKEN")
+        self.assertNotIn("=", cmd[cred_idx + 1])
+
+    def test_update_vault_sourced_credential(self):
+        prov = _provider_by_name(self.desc, "rosa-agent-github")
+        argv, env_plan = pp.build_provider_argv(
+            prov, self.vault, self.gateway, provider_exists=True
+        )
+        self.assertEqual(len(argv), 1)
+        self.assertIn("update", argv[0])
+
+    def test_create_literal_credential(self):
+        """Literal credential uses --credential KEY=VALUE."""
+        prov = _provider_by_name(self.desc, "rosa-agent-pagerduty")
+        argv, env_plan = pp.build_provider_argv(
+            prov, self.vault, self.gateway, provider_exists=False
+        )
+        cmd = argv[0]
+        self.assertIn("create", cmd)
+        cred_idx = cmd.index("--credential")
+        self.assertIn("=", cmd[cred_idx + 1])
+        self.assertTrue(cmd[cred_idx + 1].startswith("PAGERDUTY_ACCESS_TOKEN="))
+
+    def test_config_flags(self):
+        """Config entries appear as --config KEY=VALUE."""
+        prov = _provider_by_name(self.desc, "rosa-agent-vertex")
+        argv, _ = pp.build_provider_argv(
+            prov, self.vault, self.gateway, provider_exists=False
+        )
+        cmd = argv[0]
+        config_pairs = []
+        for i, arg in enumerate(cmd):
+            if arg == "--config" and i + 1 < len(cmd):
+                config_pairs.append(cmd[i + 1])
+        self.assertIn("VERTEX_AI_PROJECT_ID=rosa-general", config_pairs)
+        self.assertIn("VERTEX_AI_REGION=global", config_pairs)
+
+    def test_global_profile_flag(self):
+        prov = _provider_by_name(self.desc, "rosa-agent-github")
+        argv, _ = pp.build_provider_argv(
+            prov, self.vault, self.gateway, provider_exists=False
+        )
+        self.assertIn("--global-profile", argv[0])
+
+    def test_env_plan_for_vault_sourced(self):
+        """Env plan maps env var name to vault command for Vault-sourced."""
+        prov = _provider_by_name(self.desc, "rosa-agent-github")
+        _, env_plan = pp.build_provider_argv(
+            prov, self.vault, self.gateway, provider_exists=False
+        )
+        self.assertIn("GH_TOKEN", env_plan)
+        self.assertIn("vault", env_plan["GH_TOKEN"]["command"])
+
+    def test_no_secret_in_argv(self):
+        """AC5: no secret value in any argv."""
+        for prov in self.desc["providers"]:
+            argv, _ = pp.build_provider_argv(
+                prov, self.vault, self.gateway, provider_exists=False
+            )
+            flat = " ".join(" ".join(cmd) for cmd in argv)
+            # Vault field names are coordinates, not values
+            for cred in prov.get("credentials", []):
+                if cred.get("vault_field"):
+                    # The vault field name may appear in env_plan commands but
+                    # should not appear as a bare value in the argv
+                    self.assertNotIn(
+                        f"={cred['vault_field']}", flat,
+                        f"Vault field value leaked into argv for {prov['name']}"
+                    )
+
+    def test_openshell_pin_gateway_token(self):
+        """Openshell provider sets pin_gateway_token env entry."""
+        prov = _provider_by_name(self.desc, "rosa-agent-openshell")
+        _, env_plan = pp.build_provider_argv(
+            prov, self.vault, self.gateway, provider_exists=False
+        )
+        self.assertIn("OPENSHELL_TOKEN", env_plan)
+
+
+class TestBuildRefreshArgv(unittest.TestCase):
+    """Refresh configure + rotate argv sequences."""
+
+    def setUp(self):
+        self.desc = _load_minimal()
+        self.vault = self.desc["vault"]
+        self.gateway = "rosa-agent"
+
+    def test_no_refresh(self):
+        prov = _provider_by_name(self.desc, "rosa-agent-github")
+        result = pp.build_refresh_argv(prov, self.vault, self.gateway)
+        self.assertIsNone(result)
+
+    def test_pagerduty_refresh_configure(self):
+        prov = _provider_by_name(self.desc, "rosa-agent-pagerduty")
+        result = pp.build_refresh_argv(prov, self.vault, self.gateway)
+        self.assertIsNotNone(result)
+        argv, env_plan, do_rotate = result
+        # configure command
+        cmd = argv[0]
+        self.assertIn("refresh", cmd)
+        self.assertIn("configure", cmd)
+        self.assertIn("--strategy", cmd)
+        strat_idx = cmd.index("--strategy")
+        self.assertEqual(cmd[strat_idx + 1], "oauth2-client-credentials")
+
+    def test_pagerduty_secret_material_via_env(self):
+        """Secret material uses --secret-material-env, not --material."""
+        prov = _provider_by_name(self.desc, "rosa-agent-pagerduty")
+        result = pp.build_refresh_argv(prov, self.vault, self.gateway)
+        argv, env_plan, _ = result
+        cmd = argv[0]
+        self.assertIn("--secret-material-env", cmd)
+        # client_secret is secret
+        sme_idx = cmd.index("--secret-material-env")
+        self.assertIn("client_secret=", cmd[sme_idx + 1])
+
+    def test_pagerduty_no_rotate(self):
+        """PagerDuty has no rotate_after_configure."""
+        prov = _provider_by_name(self.desc, "rosa-agent-pagerduty")
+        _, _, do_rotate = pp.build_refresh_argv(prov, self.vault, self.gateway)
+        self.assertFalse(do_rotate)
+
+    def test_vertex_rotate_after_configure(self):
+        """Vertex has rotate_after_configure: true."""
+        prov = _provider_by_name(self.desc, "rosa-agent-vertex")
+        result = pp.build_refresh_argv(prov, self.vault, self.gateway)
+        argv, env_plan, do_rotate = result
+        self.assertTrue(do_rotate)
+        # Should have configure + rotate commands
+        self.assertEqual(len(argv), 2)
+        self.assertIn("configure", argv[0])
+        self.assertIn("rotate", argv[1])
+
+    def test_vertex_non_secret_material_as_flag(self):
+        """Non-secret material uses --material key=value."""
+        prov = _provider_by_name(self.desc, "rosa-agent-vertex")
+        result = pp.build_refresh_argv(prov, self.vault, self.gateway)
+        argv, _, _ = result
+        cmd = argv[0]
+        mat_values = []
+        for i, arg in enumerate(cmd):
+            if arg == "--material" and i + 1 < len(cmd):
+                mat_values.append(cmd[i + 1])
+        self.assertTrue(any(
+            v.startswith("client_email=") for v in mat_values
+        ))
+
+    def test_vertex_json_path_extraction(self):
+        """json_path is recorded in env_plan for Vault extraction."""
+        prov = _provider_by_name(self.desc, "rosa-agent-vertex")
+        result = pp.build_refresh_argv(prov, self.vault, self.gateway)
+        _, env_plan, _ = result
+        # The private_key material should have a json_path in its env plan
+        found = False
+        for key, plan in env_plan.items():
+            if plan.get("json_path") == ".private_key":
+                found = True
+                break
+        self.assertTrue(found, f"Expected json_path=.private_key in env_plan, got: {env_plan}")
+
+
+class TestDryRun(unittest.TestCase):
+    """AC3: dry-run shows argv with $ENVVAR names, no secret values."""
+
+    def setUp(self):
+        self.desc = _load_minimal()
+        self.vault = self.desc["vault"]
+        self.gateway = "rosa-agent"
+
+    def test_dry_run_all_providers(self):
+        """Dry-run produces output for all 5 providers."""
+        output = pp.format_dry_run(self.desc, self.gateway)
+        self.assertIn("rosa-agent-openshell", output)
+        self.assertIn("rosa-agent-github", output)
+        self.assertIn("rosa-agent-jira", output)
+        self.assertIn("rosa-agent-pagerduty", output)
+        self.assertIn("rosa-agent-vertex", output)
+
+    def test_dry_run_secrets_as_envvar(self):
+        """Secrets appear as $ENVVAR_NAME, not as actual values."""
+        output = pp.format_dry_run(self.desc, self.gateway)
+        self.assertIn("$GH_TOKEN", output)
+        self.assertIn("$JIRA_API_TOKEN", output)
+        self.assertIn("$OPENSHELL_OIDC_CLIENT_SECRET", output)
+
+    def test_dry_run_exists_and_missing(self):
+        """Dry-run shows both exists and missing variants."""
+        output = pp.format_dry_run(self.desc, self.gateway)
+        self.assertIn("import", output.lower())
+        self.assertIn("create", output.lower())
+        self.assertIn("update", output.lower())
+
+    def test_dry_run_single_provider(self):
+        """Dry-run with --only filters to one provider."""
+        output = pp.format_dry_run(self.desc, self.gateway, only="rosa-agent-github")
+        self.assertIn("rosa-agent-github", output)
+        self.assertNotIn("rosa-agent-jira", output)
+        self.assertNotIn("rosa-agent-vertex", output)
 
 
 if __name__ == "__main__":
