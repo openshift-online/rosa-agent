@@ -16,171 +16,20 @@ import sys
 import tempfile
 
 try:
-    import yaml as _yaml
-
-    def _load_yaml(path):
-        with open(path) as f:
-            return _yaml.safe_load(f)
-
+    import yaml
 except ImportError:
-    _yaml = None
-
-    def _load_yaml(path):
-        """Minimal YAML parser for the providers.yaml subset.
-
-        Handles: mappings, sequences (- items), quoted and unquoted scalars,
-        booleans, nulls, and comments. Does NOT handle: anchors, aliases,
-        flow collections, multi-line scalars, or complex keys.
-        """
-        with open(path) as f:
-            lines = f.readlines()
-        return _parse_yaml_lines(lines)
+    yaml = None
 
 
-def _parse_yaml_lines(lines):
-    """Parse a list of YAML lines into a Python object."""
-    root, _ = _parse_block(lines, 0, -1)
-    return root
-
-
-def _parse_block(lines, start, parent_indent):
-    """Parse a YAML block starting at line `start` with indent > parent_indent."""
-    result = None
-    i = start
-    while i < len(lines):
-        raw = lines[i]
-        stripped = raw.rstrip("\n").rstrip("\r")
-
-        # Skip blank lines and comments
-        if not stripped or stripped.lstrip().startswith("#"):
-            i += 1
-            continue
-
-        indent = len(stripped) - len(stripped.lstrip())
-
-        # Back to parent level or above — stop
-        if indent <= parent_indent:
-            break
-
-        content = stripped.lstrip()
-
-        # Sequence item
-        if content.startswith("- "):
-            if result is None:
-                result = []
-            item_text = content[2:]
-            # Is the item a mapping key?
-            if ":" in item_text and not item_text.startswith('"'):
-                key_match = re.match(r"([A-Za-z_][A-Za-z0-9_./-]*)\s*:\s*(.*)", item_text)
-                if key_match:
-                    item = {}
-                    key = key_match.group(1)
-                    val_text = key_match.group(2).strip()
-                    # First key on the same line as the dash
-                    item_indent = indent + 2
-                    if val_text:
-                        item[key] = _parse_scalar(val_text)
-                        i += 1
-                    else:
-                        # Value is a nested block
-                        sub, i = _parse_block(lines, i + 1, indent + 2 + len(key))
-                        if sub is None:
-                            sub, i = _parse_block(lines, i, item_indent)
-                        item[key] = sub
-                    # Read remaining keys at item_indent
-                    while i < len(lines):
-                        raw2 = lines[i]
-                        s2 = raw2.rstrip("\n").rstrip("\r")
-                        if not s2 or s2.lstrip().startswith("#"):
-                            i += 1
-                            continue
-                        ind2 = len(s2) - len(s2.lstrip())
-                        if ind2 < item_indent:
-                            break
-                        if ind2 == item_indent:
-                            c2 = s2.lstrip()
-                            km2 = re.match(r"([A-Za-z_][A-Za-z0-9_./-]*)\s*:\s*(.*)", c2)
-                            if km2:
-                                k2 = km2.group(1)
-                                v2 = km2.group(2).strip()
-                                if v2:
-                                    item[k2] = _parse_scalar(v2)
-                                    i += 1
-                                else:
-                                    sub2, i = _parse_block(lines, i + 1, ind2)
-                                    item[k2] = sub2
-                            else:
-                                break
-                        elif ind2 > item_indent:
-                            # Sub-block of the last key
-                            i += 1
-                        else:
-                            break
-                    result.append(item)
-                    continue
-            # Simple scalar list item
-            result.append(_parse_scalar(item_text.strip()))
-            i += 1
-            continue
-
-        # Mapping key
-        key_match = re.match(r"([A-Za-z_][A-Za-z0-9_./-]*)\s*:\s*(.*)", content)
-        if key_match:
-            if result is None:
-                result = {}
-            key = key_match.group(1)
-            val_text = key_match.group(2).strip()
-            if val_text:
-                result[key] = _parse_scalar(val_text)
-                i += 1
-            else:
-                sub, i = _parse_block(lines, i + 1, indent)
-                result[key] = sub
-            continue
-
-        i += 1
-
-    return result, i
-
-
-def _parse_scalar(text):
-    """Parse a YAML scalar value."""
-    if not text:
-        return None
-    # Remove trailing comments (not inside quotes)
-    if not text.startswith('"') and not text.startswith("'"):
-        comment_pos = text.find(" #")
-        if comment_pos >= 0:
-            text = text[:comment_pos].rstrip()
-
-    # Quoted strings
-    if (text.startswith('"') and text.endswith('"')) or \
-       (text.startswith("'") and text.endswith("'")):
-        return text[1:-1]
-    # Booleans
-    if text.lower() in ("true", "yes", "on"):
-        return True
-    if text.lower() in ("false", "no", "off"):
-        return False
-    # Empty flow collections
-    if text == "[]":
-        return []
-    if text == "{}":
-        return {}
-    # Null
-    if text.lower() in ("null", "~", ""):
-        return None
-    # Integers
-    try:
-        return int(text)
-    except ValueError:
-        pass
-    # Floats
-    try:
-        return float(text)
-    except ValueError:
-        pass
-    return text
+def _load_yaml(path):
+    if yaml is None:
+        sys.exit(
+            "ERROR: PyYAML is required.\n"
+            "  Fedora/RHEL: sudo dnf install -y python3-pyyaml\n"
+            "  venv:        python3 -m pip install pyyaml"
+        )
+    with open(path) as f:
+        return yaml.safe_load(f)
 
 
 # ---------------------------------------------------------------------------
