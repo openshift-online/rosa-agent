@@ -665,23 +665,6 @@ def _read_gateway_token(gateway, config_dir=None):
     return data.get("access_token")
 
 
-def _resolve_env_plan(env_plan, vault, vault_reader, gateway, config_dir=None):
-    """Resolve an env_plan dict into actual env vars."""
-    env = {}
-    for var, plan in env_plan.items():
-        if plan.get("source") == "token_file":
-            token = _read_gateway_token(gateway, config_dir=config_dir)
-            if token:
-                env[var] = token
-        elif "command" in plan:
-            # Use vault_reader to resolve
-            cmd = plan["command"]
-            # Parse the vault command to extract mount/path/field
-            # This is reconstructed from the env_plan metadata
-            # For the runner, we use the vault_reader interface instead
-            pass
-    return env
-
 
 def _resolve_env_for_credentials(prov, vault, vault_reader):
     """Resolve Vault-sourced credentials into env vars."""

@@ -825,8 +825,8 @@ class TestProvisionProvider(unittest.TestCase):
             c for c in self.runner.calls
             if "provider" in c["argv"] and ("create" in c["argv"] or "update" in c["argv"])
         ]
-        if create_calls:
-            self.assertEqual(create_calls[0]["env"].get("OPENSHELL_TOKEN"), "test-token-xyz")
+        self.assertGreaterEqual(len(create_calls), 1)
+        self.assertEqual(create_calls[0]["env"].get("OPENSHELL_TOKEN"), "test-token-xyz")
 
     def test_refresh_configure_and_rotate(self):
         """Vertex provider runs configure then rotate."""
