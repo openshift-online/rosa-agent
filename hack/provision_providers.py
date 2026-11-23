@@ -514,9 +514,13 @@ class DefaultVaultReader:
 
 _NOT_FOUND_RE = re.compile(
     r"""(?ix)                       # case-insensitive, verbose
-    (?:provider\s+)?                # optional "provider " prefix
-    (?:profile\s+)?                 # optional "profile " prefix
-    ['"]?[\w.:-]+['"]?\s+not\s+found  # name (possibly quoted) + "not found"
+    (?:provider\s+(?:profile\s+)?)  # "provider " or "provider profile "
+    ['"]?[\w.:-]+['"]?              # name (possibly quoted)
+    \s+not\s+found                  # "not found"
+    |                               # OR
+    profile\s+                      # "profile "
+    ['"]?[\w.:-]+['"]?              # name (possibly quoted)
+    \s+not\s+found                  # "not found"
     """
 )
 
