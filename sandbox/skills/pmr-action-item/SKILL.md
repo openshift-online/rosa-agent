@@ -253,6 +253,38 @@ the step 6 fan-out and its CONFIRMED/PLAUSIBLE finding format, the
 non-interactive rules, blockers going on the ticket, and how the PR is
 opened in step 8.
 
+## 5a. Spin off manual investigation tickets (if not already done)
+
+After implementing the code work (Step 5), check whether the proposal identified
+any items that were explicitly excluded because they require human action
+rosa-agent cannot perform — fleet-wide audits, operational checks requiring
+direct cluster access, tasks requiring elevated permissions, or work that cannot
+be a code PR.
+
+**If `pmr-remediation-analysis` Step 8a already ran** (look for a comment on
+the ticket containing "has created" and "pmr-manual" for tracking), those
+tickets exist — skip this step.
+
+**If no manual tickets exist yet**, create them now using the same pattern as
+`pmr-remediation-analysis` Step 8a. This handles tickets where the analysis
+skill ran before Step 8a was added to the skill, or where manual items were
+identified during implementation that weren't visible at proposal time.
+
+**Identifying manual items in the proposal:**
+
+Scan the proposal comment (from Step 2) for items that:
+- Are explicitly noted as "operational task", "fleet audit", "fleet-wide", or "cannot be represented as a code PR"
+- Require `ocm backplane`, direct cluster access, or permissions rosa-agent doesn't have
+- Are listed in a "Scope notes" or "Limitations" section as excluded from automation
+
+For each such item, follow the ticket creation pattern from `pmr-remediation-analysis`
+Step 8a exactly: same project as the parent, Task issue type, `pmr-manual` label,
+reporter as assignee, Related link back to parent, and a @mention comment on the
+parent ticket notifying the reporter.
+
+**Reference:** `pmr-remediation-analysis` SKILL.md Step 8a has the full ADF
+templates and idempotency check.
+
 ## 6. Security fan-out - mandatory, both of the following
 
 Before opening any PR, vet the diff two ways:

@@ -672,6 +672,103 @@ The script outputs `{"body": {...ADF doc...}}` ready to POST. The full proposal
 text (Failure Mechanism, Proposed Change, Rationale, Verification Approach,
 Provenance) must be in `$PROPOSAL_TEXT` — do not post a truncated summary.
 
+### Step 8a: Spin off manual investigation tickets
+
+After tagging the ticket (Step 8), scan the full proposal text for items that were explicitly excluded from the code proposal because they require human action — things rosa-agent cannot do due to access restrictions, operational nature, or the need for human judgment. Create one Jira ticket per such item.
+
+**When to create a manual ticket:**
+
+Trigger on any item in the proposal that:
+- Is described as an "operational task", "fleet audit", or "fleet-wide" check
+- Is explicitly noted as "cannot be represented as a code PR"
+- Requires direct cluster access, ocm backplane, or elevated permissions rosa-agent does not have
+- Requires human judgment or coordination (e.g. deciding which clusters to target, communicating with customers)
+- Is listed in a "Scope notes", "Limitations", or "Excluded" section as out-of-scope for automation
+
+**Do not create a manual ticket for:**
+- Work that IS in the code proposal (even if it's hard)
+- Things that are simply "future work" with no specific action required now
+- Vague follow-up items without a concrete, actionable task
+
+**Get the reporter's accountId** from the original ticket (available from the Jira fetch in Step 1):
+
+```shell
+REPORTER_ACCOUNT_ID="<issue.fields.reporter.accountId from Step 1>"
+REPORTER_DISPLAY_NAME="<issue.fields.reporter.displayName>"
+```
+
+**For each manual item identified, create a Jira ticket in the same project:**
+
+```shell
+jira -H "Content-Type: application/json" \
+  -X POST "$JB/rest/api/3/issue" \
+  -d "{
+    \"fields\": {
+      \"project\": {\"key\": \"<SAME PROJECT AS PARENT>\"},
+      \"issuetype\": {\"name\": \"Task\"},
+      \"summary\": \"PMR Manual: <one-line description of the manual task>\",
+      \"assignee\": {\"accountId\": \"$REPORTER_ACCOUNT_ID\"},
+      \"labels\": [\"pmr-manual\"],
+      \"description\": {
+        \"type\": \"doc\",
+        \"version\": 1,
+        \"content\": [
+          {\"type\": \"paragraph\", \"content\": [
+            {\"type\": \"text\", \"text\": \"This ticket was automatically created by the pmr-remediation-analysis skill while analyzing \"},
+            {\"type\": \"text\", \"text\": \"<PARENT-ISSUE-KEY>\", \"marks\": [{\"type\": \"strong\"}]},
+            {\"type\": \"text\", \"text\": \". The PMR remediation proposal for that ticket identified this item as requiring manual human action that rosa-agent cannot perform.\"}
+          ]},
+          {\"type\": \"heading\", \"attrs\": {\"level\": 3}, \"content\": [{\"type\": \"text\", \"text\": \"What needs to be done\"}]},
+          {\"type\": \"paragraph\", \"content\": [{\"type\": \"text\", \"text\": \"<Specific description of the manual work: what to do, what to check, what outcome is expected>\"}]},
+          {\"type\": \"heading\", \"attrs\": {\"level\": 3}, \"content\": [{\"type\": \"text\", \"text\": \"Why rosa-agent cannot do this\"}]},
+          {\"type\": \"paragraph\", \"content\": [{\"type\": \"text\", \"text\": \"<Exact reason: requires direct cluster access / fleet-wide ocm backplane access / operational permissions / human judgment to scope and communicate>\"}]},
+          {\"type\": \"heading\", \"attrs\": {\"level\": 3}, \"content\": [{\"type\": \"text\", \"text\": \"Action required\"}]},
+          {\"type\": \"paragraph\", \"content\": [{\"type\": \"text\", \"text\": \"Please either perform this work yourself or assign it to a team member with the appropriate access. This work is needed to fully close the gap identified in the PMR incident.\"}]},
+          {\"type\": \"paragraph\", \"content\": [{\"type\": \"text\", \"text\": \"Parent ticket: <PARENT-ISSUE-KEY> — <brief one-sentence description of the parent PMR action item>\"}]}
+        ]
+      }
+    }
+  }"
+```
+
+**After creating each child ticket:**
+
+1. Link it to the parent ticket using `POST .../issueLink` (Related type):
+
+```shell
+jira -H "Content-Type: application/json" \
+  -X POST "$JB/rest/api/3/issueLink" \
+  -d "{
+    \"type\": {\"name\": \"Related\"},
+    \"inwardIssue\": {\"key\": \"<PARENT-ISSUE-KEY>\"},
+    \"outwardIssue\": {\"key\": \"<NEW-CHILD-KEY>\"}
+  }"
+```
+
+2. Post an ADF `@mention` comment on the **parent ticket** naming the new child ticket, so the reporter and any watchers know about it:
+
+```shell
+# ADF @mention of reporter on the parent ticket
+jira -H "Content-Type: application/json" \
+  -X POST "$JB/rest/api/3/issue/<PARENT-ISSUE-KEY>/comment" \
+  -d "{
+    \"body\": {
+      \"type\": \"doc\", \"version\": 1,
+      \"content\": [{
+        \"type\": \"paragraph\",
+        \"content\": [
+          {\"type\": \"mention\", \"attrs\": {\"id\": \"$REPORTER_ACCOUNT_ID\", \"text\": \"@$REPORTER_DISPLAY_NAME\"}},
+          {\"type\": \"text\", \"text\": \" — the PMR analysis identified a manual task that rosa-agent cannot perform and has created <NEW-CHILD-KEY> for tracking. Please review that ticket, perform the work yourself, or assign it to someone with the appropriate access.\"}
+        ]
+      }]
+    }
+  }"
+```
+
+**If the assignee field is rejected (403 or validation error):** Create the ticket without an assignee, then add a comment on the new ticket directed at the reporter (using their accountId for the ADF @mention), explaining the assignment couldn't be set automatically and asking them to self-assign.
+
+**Idempotency:** Before creating a manual ticket, check the parent's linked issues for any existing ticket with `pmr-manual` label and a summary matching the item. If one already exists, skip creation and just ensure the link and comment are present.
+
 ## Decline Path: Cannot Propose Sound Remediation
 
 **Use when you cannot propose with confidence.**
