@@ -499,6 +499,15 @@ def build_refresh_argv(prov, vault, gateway):
     return argv_list, env_plan, do_rotate
 
 
+def _substitute_env_refs(arg, env):
+    """Replace ${VAR} references in an argv string with resolved env values."""
+    import re
+    def _replace(m):
+        var = m.group(1)
+        return env.get(var, m.group(0))
+    return re.sub(r'\$\{([^}]+)\}', _replace, arg)
+
+
 # ---------------------------------------------------------------------------
 # Dry-run formatting
 # ---------------------------------------------------------------------------
@@ -685,7 +694,7 @@ def _resolve_env_for_refresh(refresh, vault, vault_reader):
     if not refresh:
         return env
     for mat in refresh.get("material", []):
-        if mat.get("vault_field") and mat.get("secret"):
+        if mat.get("vault_field"):
             env_var = f"_REFRESH_{mat['key'].upper()}"
             val = vault_reader.read(
                 vault["kv_mount"], vault["kv_path"],
@@ -810,7 +819,10 @@ def provision_one_provider(prov, vault, gateway, runner=None, vault_reader=None,
             if refresh_result:
                 argv_list, _, do_rotate = refresh_result
                 for cmd in argv_list:
-                    runner.run(cmd, env=refresh_env)
+                    resolved = [
+                        _substitute_env_refs(arg, refresh_env) for arg in cmd
+                    ]
+                    runner.run(resolved, env=refresh_env)
 
         return ProvisionResult(name, success=True)
 

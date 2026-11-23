@@ -850,6 +850,26 @@ class TestProvisionProvider(unittest.TestCase):
         self.assertIsNotNone(rotate_idx, f"No rotate call found in: {cmds}")
         self.assertLess(configure_idx, rotate_idx, "configure must precede rotate")
 
+    def test_nonsecret_vault_refresh_material_resolved(self):
+        """Non-secret vault-sourced refresh material is resolved into argv."""
+        prov = _provider_by_name(self.desc, "rosa-agent-pagerduty")
+        self.runner.responses["profile export"] = Exception("not found")
+        self.runner.responses["provider get"] = Exception("not found")
+
+        result = pp.provision_one_provider(
+            prov, self.vault, self.gateway,
+            runner=self.runner, vault_reader=self.vault_reader,
+        )
+        self.assertTrue(result.success)
+        configure_calls = [
+            c for c in self.runner.calls
+            if "configure" in c["argv"]
+        ]
+        self.assertGreaterEqual(len(configure_calls), 1)
+        configure_argv = " ".join(configure_calls[0]["argv"])
+        self.assertIn("--material client_id=fake-pagerduty-oauth-client-id", configure_argv)
+        self.assertNotIn("${", configure_argv)
+
     def test_provider_failure_isolated(self):
         """A failing provider does not prevent others from running."""
         self.runner.responses["profile export"] = Exception("not found")
