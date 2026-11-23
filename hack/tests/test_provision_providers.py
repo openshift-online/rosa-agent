@@ -1030,5 +1030,52 @@ class TestProvisionProvider(unittest.TestCase):
         self.assertIn("updated", output)
 
 
+    def test_verify_checks_type(self):
+        """Verify step confirms provider type matches profile."""
+        prov = _provider_by_name(self.desc, "rosa-agent-github")
+        self.runner.responses["profile export"] = Exception("provider profile 'unknown' not found")
+        def _wrong_type(argv, call_num):
+            if call_num == 1:
+                return Exception('provider "rosa-agent-github" not found')
+            return '{"name":"rosa-agent-github","type":"wrong-type"}'
+        self.runner.responses["provider get"] = _wrong_type
+
+        result = pp.provision_one_provider(
+            prov, self.vault, self.gateway,
+            runner=self.runner, vault_reader=self.vault_reader,
+        )
+        self.assertFalse(result.success)
+        self.assertIn("wrong-type", result.error)
+
+    def test_verify_correct_type_succeeds(self):
+        """Verify step passes when type matches profile."""
+        prov = _provider_by_name(self.desc, "rosa-agent-github")
+        self.runner.responses["profile export"] = Exception("provider profile 'unknown' not found")
+        def _correct_type(argv, call_num):
+            if call_num == 1:
+                return Exception('provider "rosa-agent-github" not found')
+            return '{"name":"rosa-agent-github","type":"github"}'
+        self.runner.responses["provider get"] = _correct_type
+
+        result = pp.provision_one_provider(
+            prov, self.vault, self.gateway,
+            runner=self.runner, vault_reader=self.vault_reader,
+        )
+        self.assertTrue(result.success, f"Expected success, got: {result}")
+
+
+class TestOnlyValidation(unittest.TestCase):
+    """Test --only validation at provision_all and format_dry_run level."""
+
+    def setUp(self):
+        self.desc = _load_minimal()
+
+    def test_dryrun_unknown_only_raises(self):
+        """format_dry_run with unknown --only raises ValueError."""
+        with self.assertRaises(ValueError) as ctx:
+            pp.format_dry_run(self.desc, "rosa-agent", only="rosa-agent-nonexistent")
+        self.assertIn("rosa-agent-nonexistent", str(ctx.exception))
+
+
 if __name__ == "__main__":
     unittest.main()

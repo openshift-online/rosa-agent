@@ -389,6 +389,13 @@ def format_dry_run(desc, gateway, only=None):
     Shows both the "new" (import/create) and "existing" (update) paths.
     Secrets appear as $ENVVAR_NAME.
     """
+    if only:
+        known = {p["name"] for p in desc["providers"]}
+        if only not in known:
+            raise ValueError(
+                f"Unknown provider '{only}'; "
+                f"known providers: {', '.join(sorted(known))}"
+            )
     vault = desc["vault"]
     lines = []
 
@@ -690,10 +697,23 @@ def provision_one_provider(prov, vault, gateway, runner=None, vault_reader=None,
         for cmd in prov_argv:
             runner.run(cmd, env=cred_env)
 
-        # 6. Verify provider exists after create/update
-        runner.run(
+        # 6. Verify provider exists and type matches profile
+        verify_result = runner.run(
             ["openshellctl", "-g", gateway, "provider", "get", name, "-o", "json"],
         )
+        verify_out = getattr(verify_result, "stdout", "")
+        if verify_out:
+            try:
+                verify_data = json.loads(verify_out)
+                actual_type = verify_data.get("type", "")
+                expected_type = prov["profile"]
+                if actual_type and actual_type != expected_type:
+                    raise RuntimeError(
+                        f"Verify failed: provider type is '{actual_type}', "
+                        f"expected '{expected_type}'"
+                    )
+            except json.JSONDecodeError:
+                pass
 
         # 7. Refresh configure + rotate
         rotated = False
@@ -819,6 +839,16 @@ def main(argv=None):
         for e in errors:
             print(f"  {e}", file=sys.stderr)
         return 1
+
+    if args.only:
+        known = {p["name"] for p in desc["providers"]}
+        if args.only not in known:
+            print(
+                f"Unknown provider '{args.only}'; "
+                f"known providers: {', '.join(sorted(known))}",
+                file=sys.stderr,
+            )
+            return 1
 
     if args.check:
         print("providers.yaml: OK")

@@ -259,9 +259,18 @@ Hypershell Provider config:
 export JIRA_API_TOKEN=$(vault kv get -mount=osd-sre -field="jira-token" rosa-agent)
 openshell provider create --name "rosa-agent-jira" \
   --type atlassian-jira \
-  --credential JIRA_API_TOKEN \
-  --config JIRA_EMAIL="sd-sre-platform+rosa-agent@redhat.com" \
-  --config JIRA_BASE_URL="https://redhat.atlassian.net"
+  --credential JIRA_API_TOKEN
+```
+
+`JIRA_EMAIL` and `JIRA_BASE_URL` are not secrets and are not handled by
+`--config` (custom profiles have no mechanism to expose `--config` values as
+sandbox env vars). Pass them as `--env` at sandbox creation time:
+
+```bash
+openshell sandbox create --provider rosa-agent-jira \
+    --env JIRA_EMAIL=sd-sre-platform+rosa-agent@redhat.com \
+    --env JIRA_BASE_URL=https://redhat.atlassian.net \
+    -- claude
 ```
 
 Note: The `atlassian-jira` Provider Profile is a custom profile, defined in this repo at
@@ -310,7 +319,10 @@ refreshes itself and sends as a plain `Authorization: Bearer <token>`.
 Hypershell Provider config:
 
 ```bash
-openshell provider create --name "rosa-agent-pagerduty" --type pagerduty
+# The placeholder credential is required at create time — the gateway needs
+# a credential entry to attach the refresh strategy to.
+openshell provider create --name "rosa-agent-pagerduty" --type pagerduty \
+  --credential PAGERDUTY_ACCESS_TOKEN=placeholder
 
 # Register (or reuse) a Scoped OAuth app in PagerDuty first (Developer Mode /
 # App Registration, with Incidents read+write access) to get these values:
@@ -321,6 +333,10 @@ openshell provider refresh configure rosa-agent-pagerduty \
   --strategy oauth2-client-credentials \
   --material client_id="$PD_CLIENT_ID" \
   --secret-material-env client_secret=PD_CLIENT_SECRET
+
+# Rotate immediately so the placeholder is replaced with a real token.
+openshell provider refresh rotate rosa-agent-pagerduty \
+  --credential-key PAGERDUTY_ACCESS_TOKEN
 ```
 
 Note: The `pagerduty` Provider Profile is a custom profile, defined in this repo at
