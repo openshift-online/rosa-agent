@@ -191,6 +191,25 @@ class RunIdCliTests(unittest.TestCase):
 
 
 class EpicCommentCliTests(unittest.TestCase):
+    def test_outputs_adf_json(self):
+        stories = [
+            {"key": "X-1", "summary": "test", "pr_number": 1,
+             "pr_url": "https://example.com/pull/1", "merged_date": "2026-01-01"},
+        ]
+        old_stdin = sys.stdin
+        sys.stdin = io.StringIO(json.dumps(stories))
+        old_stdout = sys.stdout
+        sys.stdout = io.StringIO()
+        try:
+            code = run(["epic-comment", "--repo", "org/repo"])
+            output = json.loads(sys.stdout.getvalue())
+        finally:
+            sys.stdin = old_stdin
+            sys.stdout = old_stdout
+        self.assertEqual(code, 0)
+        self.assertIn("body", output)
+        self.assertEqual(output["body"]["type"], "doc")
+
     def test_bad_merged_story_input_exits_1(self):
         old_stdin = sys.stdin
         sys.stdin = io.StringIO(json.dumps([{"key": "X-1"}]))
@@ -224,6 +243,49 @@ class EpicCommentCliTests(unittest.TestCase):
             sys.stderr = old_stderr
         self.assertEqual(code, 1)
         self.assertIn("error:", stderr_output)
+
+
+class SandboxStatusCliTests(unittest.TestCase):
+    def test_single_sandbox(self):
+        data = {
+            "metadata": {"name": "mcs-278"},
+            "phase": "Ready",
+            "resource_version": 42,
+        }
+        old_stdin = sys.stdin
+        sys.stdin = io.StringIO(json.dumps(data))
+        old_stdout = sys.stdout
+        sys.stdout = io.StringIO()
+        try:
+            code = run(["sandbox-status"])
+            output = json.loads(sys.stdout.getvalue())
+        finally:
+            sys.stdin = old_stdin
+            sys.stdout = old_stdout
+        self.assertEqual(code, 0)
+        self.assertEqual(output["name"], "mcs-278")
+        self.assertEqual(output["phase"], "Ready")
+        self.assertEqual(output["resource_version"], 42)
+
+    def test_sandbox_list(self):
+        data = [
+            {"metadata": {"name": "mcs-278"}, "phase": "Ready", "resource_version": 1},
+            {"metadata": {"name": "mcs-319"}, "phase": "Completed", "resource_version": 2},
+        ]
+        old_stdin = sys.stdin
+        sys.stdin = io.StringIO(json.dumps(data))
+        old_stdout = sys.stdout
+        sys.stdout = io.StringIO()
+        try:
+            code = run(["sandbox-status", "--list"])
+            output = json.loads(sys.stdout.getvalue())
+        finally:
+            sys.stdin = old_stdin
+            sys.stdout = old_stdout
+        self.assertEqual(code, 0)
+        self.assertEqual(len(output), 2)
+        self.assertEqual(output[0]["name"], "mcs-278")
+        self.assertEqual(output[1]["name"], "mcs-319")
 
 
 class DetectStuckCliTests(unittest.TestCase):

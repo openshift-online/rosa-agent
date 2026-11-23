@@ -189,11 +189,7 @@ def parse_sandbox_list(data: List[Dict[str, Any]]) -> List[SandboxStatus]:
 
 
 def detect_stuck(sandbox_type: str, elapsed_minutes: int) -> StuckVerdict:
-    """Determine if a sandbox is stuck based on type and elapsed time.
-
-    sandbox_type: one of 'nit', 'fixup', 'implementation'.
-    Falls back to 'implementation' thresholds for unknown types.
-    """
+    """Determine if a sandbox is stuck based on type and elapsed time."""
     investigate_at, kill_at = _THRESHOLDS.get(
         sandbox_type, _THRESHOLDS["implementation"]
     )

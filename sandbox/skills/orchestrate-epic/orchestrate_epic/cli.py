@@ -19,7 +19,6 @@ from .jira_models import (
     build_assignee_payload,
     build_epic_comment,
     build_remote_link_payload,
-    build_sprint_payload,
     build_transition_payload,
     filter_actionable,
     parse_epic_children,
@@ -31,6 +30,8 @@ from .sandbox_models import (
     build_labels,
     detect_stuck,
     make_run_id,
+    parse_sandbox_list,
+    parse_sandbox_status,
     sandbox_name,
     sandbox_name_suffixed,
 )
@@ -101,7 +102,12 @@ def build_parser() -> argparse.ArgumentParser:
         "detect-stuck",
         help="Check if a sandbox is stuck.",
     )
-    p_stuck.add_argument("--type", required=True, dest="sandbox_type")
+    p_stuck.add_argument(
+        "--type",
+        required=True,
+        dest="sandbox_type",
+        choices=["nit", "fixup", "rebase", "implementation"],
+    )
     p_stuck.add_argument("--elapsed-minutes", required=True, type=int)
     p_stuck.set_defaults(func=cmd_detect_stuck)
 
@@ -138,12 +144,17 @@ def build_parser() -> argparse.ArgumentParser:
     p_trans.add_argument("--transition-id", required=True)
     p_trans.set_defaults(func=cmd_transition_payload)
 
-    p_sprint = sub.add_parser(
-        "sprint-payload",
-        help="Emit a Jira sprint add-issues payload.",
+    p_status = sub.add_parser(
+        "sandbox-status",
+        help="Parse sandbox JSON from stdin, emit name/phase/resource_version.",
     )
-    p_sprint.add_argument("issues", nargs="+")
-    p_sprint.set_defaults(func=cmd_sprint_payload)
+    p_status.add_argument(
+        "--list",
+        action="store_true",
+        dest="is_list",
+        help="Parse a JSON array of sandboxes instead of a single sandbox.",
+    )
+    p_status.set_defaults(func=cmd_sandbox_status)
 
     return parser
 
@@ -220,10 +231,10 @@ def cmd_detect_stuck(args: argparse.Namespace) -> int:
 def cmd_epic_comment(args: argparse.Namespace) -> int:
     data = json.load(sys.stdin)
     stories = [MergedStory(**s) for s in data]
-    comment = build_epic_comment(
+    adf = build_epic_comment(
         stories, repo=args.repo, jira_base_url=args.jira_base_url,
     )
-    print(comment)
+    print(json.dumps({"body": adf}, indent=2))
     return 0
 
 
@@ -242,8 +253,18 @@ def cmd_transition_payload(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_sprint_payload(args: argparse.Namespace) -> int:
-    print(json.dumps(build_sprint_payload(args.issues)))
+def cmd_sandbox_status(args: argparse.Namespace) -> int:
+    data = json.load(sys.stdin)
+    if args.is_list:
+        statuses = parse_sandbox_list(data)
+        result = [
+            {"name": s.name, "phase": s.phase, "resource_version": s.resource_version}
+            for s in statuses
+        ]
+    else:
+        s = parse_sandbox_status(data)
+        result = {"name": s.name, "phase": s.phase, "resource_version": s.resource_version}
+    print(json.dumps(result, indent=2))
     return 0
 
 
