@@ -77,10 +77,15 @@ def validate_descriptor(desc, base_dir="."):
         name = prov.get("name")
         if not name:
             errors.append(f"{prefix}: 'name' is required")
-        elif name in seen_names:
-            errors.append(f"{prefix}: duplicate provider name '{name}'")
         else:
-            seen_names.add(name)
+            if not name.startswith("rosa-agent-"):
+                errors.append(
+                    f"{prefix}: name must start with 'rosa-agent-', got '{name}'"
+                )
+            if name in seen_names:
+                errors.append(f"{prefix}: duplicate provider name '{name}'")
+            else:
+                seen_names.add(name)
 
         if not prov.get("profile"):
             errors.append(f"{prefix}: 'profile' is required")
@@ -133,6 +138,15 @@ def validate_descriptor(desc, base_dir="."):
                         f"({len(val)})"
                     )
 
+        # Validate config keys
+        for ci, cfg in enumerate(prov.get("config", [])):
+            cfg_key = cfg.get("key", "")
+            if cfg_key and not re.match(r'^[A-Z0-9_]+$', cfg_key):
+                errors.append(
+                    f"{prefix}.config[{ci}]: key '{cfg_key}' does not match "
+                    f"pattern [A-Z0-9_]+"
+                )
+
         # Validate refresh
         refresh = prov.get("refresh")
         if refresh is not None:
@@ -167,6 +181,18 @@ def validate_descriptor(desc, base_dir="."):
                     if mat.get("json_path") and not has_vf:
                         errors.append(
                             f"{mprefix}: 'json_path' requires 'vault_field'"
+                        )
+                    if has_lit:
+                        val = str(mat["literal"])
+                        if len(val) > 64:
+                            errors.append(
+                                f"{mprefix}: literal value exceeds 64 characters "
+                                f"({len(val)})"
+                            )
+                    if mat.get("secret") and has_lit:
+                        errors.append(
+                            f"{mprefix}: secret material must not use 'literal' "
+                            f"(use vault_field instead)"
                         )
 
     return errors
@@ -757,13 +783,14 @@ def main(argv=None):
 
     desc = load_descriptor(args.descriptor)
 
+    errors = validate_descriptor(desc, base_dir=args.base_dir)
+    if errors:
+        print("Validation errors:", file=sys.stderr)
+        for e in errors:
+            print(f"  {e}", file=sys.stderr)
+        return 1
+
     if args.check:
-        errors = validate_descriptor(desc, base_dir=args.base_dir)
-        if errors:
-            print("Validation errors:", file=sys.stderr)
-            for e in errors:
-                print(f"  {e}", file=sys.stderr)
-            return 1
         print("providers.yaml: OK")
         return 0
 

@@ -217,6 +217,54 @@ class TestValidateDescriptor(unittest.TestCase):
         errors = self._validate(desc)
         self.assertEqual(errors, [])
 
+    def test_name_pattern_rejected(self):
+        """Provider name must match ^rosa-agent-."""
+        desc = self._one_provider(name="my-provider")
+        errors = self._validate(desc)
+        self.assertTrue(any("rosa-agent-" in e for e in errors),
+                        f"Expected name pattern error, got: {errors}")
+
+    def test_name_pattern_accepted(self):
+        desc = self._one_provider(name="rosa-agent-custom")
+        errors = self._validate(desc)
+        self.assertEqual(errors, [])
+
+    def test_config_key_pattern_rejected(self):
+        """Config keys must be [A-Z0-9_]+."""
+        desc = self._one_provider(
+            config=[{"key": "bad-key", "literal": "v"}])
+        errors = self._validate(desc)
+        self.assertTrue(any("config" in e.lower() and "pattern" in e.lower()
+                            for e in errors),
+                        f"Expected config key pattern error, got: {errors}")
+
+    def test_refresh_material_literal_over_64_rejected(self):
+        """64-char limit applies to refresh material literals too."""
+        desc = self._one_provider(
+            credentials=[{"key": "TOKEN", "literal": "placeholder"}],
+            refresh={
+                "strategy": "oauth2-client-credentials",
+                "credential_key": "TOKEN",
+                "material": [{"key": "k", "literal": "x" * 65}],
+            })
+        errors = self._validate(desc)
+        self.assertTrue(any("64" in e for e in errors),
+                        f"Expected >64 char error, got: {errors}")
+
+    def test_secret_literal_combo_rejected(self):
+        """secret: true combined with literal must be rejected."""
+        desc = self._one_provider(
+            credentials=[{"key": "TOKEN", "literal": "placeholder"}],
+            refresh={
+                "strategy": "oauth2-client-credentials",
+                "credential_key": "TOKEN",
+                "material": [{"key": "k", "literal": "val", "secret": True}],
+            })
+        errors = self._validate(desc)
+        self.assertTrue(any("secret" in e.lower() and "literal" in e.lower()
+                            for e in errors),
+                        f"Expected secret+literal error, got: {errors}")
+
 
 # ---------------------------------------------------------------------------
 # Argv builder tests — AC3: dry-run shows all argv with $ENVVAR names
