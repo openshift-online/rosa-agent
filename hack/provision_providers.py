@@ -710,7 +710,13 @@ def provision_one_provider(prov, vault, gateway, runner=None, vault_reader=None,
                     try:
                         runner.run(resolved, env=refresh_env)
                     except Exception as configure_err:
-                        if "already configured" in str(configure_err).lower():
+                        err_text = str(configure_err).lower()
+                        err_stderr = getattr(
+                            configure_err, "stderr", ""
+                        ) or ""
+                        if "already configured" in (
+                            err_text + " " + err_stderr.lower()
+                        ):
                             pass
                         else:
                             raise

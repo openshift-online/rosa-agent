@@ -845,6 +845,27 @@ class TestProvisionProvider(unittest.TestCase):
         self.assertTrue(result.success,
                         f"Should succeed despite 'already configured': {result.error}")
 
+    def test_refresh_already_configured_calledprocesserror(self):
+        """CalledProcessError with 'already configured' in stderr is handled.
+
+        DefaultRunner uses check=True, producing CalledProcessError whose
+        __str__ is 'Command [...] returned non-zero exit status 1' — the
+        actual message is only in .stderr.
+        """
+        prov = _provider_by_name(self.desc, "rosa-agent-pagerduty")
+        self.runner.responses["profile export"] = Exception("provider profile 'unknown' not found")
+        self.runner.responses["provider get"] = _not_found_then_ok
+        err = subprocess.CalledProcessError(1, ["openshell", "provider", "refresh", "configure"])
+        err.stderr = "already configured for credential key PAGERDUTY_ACCESS_TOKEN"
+        self.runner.responses["refresh configure"] = err
+
+        result = pp.provision_one_provider(
+            prov, self.vault, self.gateway,
+            runner=self.runner, vault_reader=self.vault_reader,
+        )
+        self.assertTrue(result.success,
+                        f"Should handle CalledProcessError with 'already configured' in stderr: {result.error}")
+
     def test_nonsecret_vault_refresh_material_resolved(self):
         """Non-secret vault-sourced refresh material is resolved into argv."""
         prov = _provider_by_name(self.desc, "rosa-agent-pagerduty")
