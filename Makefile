@@ -11,7 +11,7 @@ SANDBOX_TAG ?= $(shell git rev-parse --short=7 HEAD)
 SANDBOX_CONTAINERFILE := Containerfile
 SANDBOX_CONTEXT := .
 
-.PHONY: lint markdown-lint check-placeholders lint-sandbox check-hypershell check-providers generate-hypershell test test-hack test-e2e-nested-sandbox sandbox-build sandbox-push require-sandbox-image providers provider providers-dry-run openshell-provider openshell-profile openshell-provider-only openshell-gateway openshell-vault-login
+.PHONY: lint markdown-lint check-placeholders lint-sandbox check-hypershell check-providers generate-hypershell test test-hack test-e2e-nested-sandbox sandbox-build sandbox-push require-sandbox-image providers provider providers-dry-run openshell-provider openshell-gateway openshell-vault-login
 
 # Parent lint target: runs every linter. The OpenShift CI `ci/prow/lint`
 # presubmit runs `make lint`. Add new linters (shell, yaml, ...) as their own
@@ -124,8 +124,16 @@ sandbox-push: require-sandbox-image sandbox-build
 # and optional refresh configure + rotate. Vault-sourced secrets are read at
 # runtime into environment variables and never appear in Make output or argv.
 #
-# Required: VAULT_ADDR, a valid Vault session, and both `openshell` (Rust CLI)
-# and `openshellctl` (Go CLI) on PATH.
+# Two CLIs are needed because openshellctl (Go) has no profile import/update
+# (stubs), and the Rust openshell has no Vault integration. openshellctl
+# bridges them by writing a token file that the Rust CLI reads
+# (token refresh --write).
+#
+# Required exports (defaults shown):
+#   VAULT_ADDR                           (no default — must be set)
+#   OPENSHELL_VAULT_KV_MOUNT  ?= osd-sre
+#   OPENSHELL_VAULT_KV_PATH   ?= rosa-agent
+#   OPENSHELL_VAULT_FIELD_PREFIX ?= hypershell
 # ---------------------------------------------------------------------------
 
 OPENSHELL_GATEWAY_NAME    ?= rosa-agent
@@ -134,21 +142,22 @@ OPENSHELL_VAULT_KV_MOUNT  ?= osd-sre
 OPENSHELL_VAULT_KV_PATH   ?= rosa-agent
 OPENSHELL_VAULT_FIELD_PREFIX ?= hypershell
 
-# Provision all five providers.
-providers:
+# Provision all five providers. openshell-gateway handles Vault login,
+# gateway registration, and token refresh --write so both CLIs can auth.
+providers: openshell-gateway
 	python3 hack/provision_providers.py \
 		--descriptor $(PROVIDERS_DESCRIPTOR) \
 		--gateway $(OPENSHELL_GATEWAY_NAME)
 
 # Provision a single provider by name (e.g. PROVIDER=rosa-agent-github).
-provider:
+provider: openshell-gateway
 	@test -n "$(PROVIDER)" || { echo "ERROR: PROVIDER is not set."; echo "Usage: make provider PROVIDER=rosa-agent-github"; exit 1; }
 	python3 hack/provision_providers.py \
 		--descriptor $(PROVIDERS_DESCRIPTOR) \
 		--gateway $(OPENSHELL_GATEWAY_NAME) \
 		--only $(PROVIDER)
 
-# Show planned commands without executing.
+# Show planned commands without executing (no gateway needed).
 providers-dry-run:
 	python3 hack/provision_providers.py \
 		--descriptor $(PROVIDERS_DESCRIPTOR) \
@@ -172,7 +181,10 @@ openshell-vault-login:
 	@vault token lookup >/dev/null 2>&1 || vault login -method=oidc
 
 # Add the gateway to the local openshellctl registry if not already present,
-# then refresh the token so the Rust openshell CLI can use it.
+# then refresh the token so the Rust openshell CLI can use it. The token file
+# written by --write is also used by pin_gateway_token in providers.yaml to
+# avoid OPENSHELL_OIDC_CLIENT_SECRET being interpreted as openshellctl's own
+# auth credential (vaultauth.go:171 / pkg/auth/resolve.go:72).
 openshell-gateway: openshell-vault-login
 	@command -v openshellctl >/dev/null 2>&1 || { echo "ERROR: openshellctl not found on PATH"; exit 1; }
 	@command -v openshell   >/dev/null 2>&1 || { echo "ERROR: openshell not found on PATH (Rust CLI required for profile import)"; exit 1; }
@@ -186,33 +198,6 @@ openshell-gateway: openshell-vault-login
 	    --vault-kv-path $(OPENSHELL_VAULT_KV_PATH) \
 	    --vault-field-prefix $(OPENSHELL_VAULT_FIELD_PREFIX)
 	openshellctl -g $(OPENSHELL_GATEWAY_NAME) token refresh --write --no-browser
-
-# Lint and import-or-update the provider profile on the gateway.
-openshell-profile: openshell-gateway
-	openshell -g $(OPENSHELL_GATEWAY_NAME) profile lint --file provider-profiles/openshell.yaml
-	hack/openshell_profile_apply.sh $(OPENSHELL_GATEWAY_NAME) provider-profiles/openshell.yaml --global
-
-# Create-or-update the provider, reading the OIDC secret from Vault into env
-# so the secret value never reaches argv or Make output.
-#
-# OPENSHELL_TOKEN pins openshellctl's auth to the static token written by
-# openshell-gateway (token refresh --write). Without this, openshellctl reads
-# OPENSHELL_OIDC_CLIENT_SECRET from the environment as its own auth credential
-# (vaultauth.go:171 sets Overrides.ClientSecretSource=true), attempts a
-# client-credentials exchange with an empty client-id, Keycloak rejects it,
-# and the exchanger enters backoff — causing provider get and provider create
-# to both fail. OPENSHELL_TOKEN takes precedence over client-credentials
-# (pkg/auth/resolve.go:72), so the secret in env becomes inert for auth and
-# is used only by ParseCredentialPairs for the --credential KEY lookup.
-openshell-provider-only: openshell-gateway
-	env OPENSHELL_TOKEN="$$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["access_token"])' \
-	      "$${XDG_CONFIG_HOME:-$$HOME/.config}/openshell/gateways/$(OPENSHELL_GATEWAY_NAME)/oidc_token.json")" \
-	    OPENSHELL_OIDC_CLIENT_SECRET="$$(vault kv get -mount=$(OPENSHELL_VAULT_KV_MOUNT) -field=hypershell-oidc-client-secret $(OPENSHELL_VAULT_KV_PATH))" \
-	  hack/openshell_provider_apply.sh \
-	    $(OPENSHELL_GATEWAY_NAME) \
-	    rosa-agent-openshell \
-	    openshell \
-	    OPENSHELL_OIDC_CLIENT_SECRET
 
 # ---------------------------------------------------------------------------
 # E2E tests — human-run only; Prow/Konflux cannot reach the HyperShell OIDC
