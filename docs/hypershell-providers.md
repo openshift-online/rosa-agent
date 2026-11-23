@@ -39,6 +39,19 @@ into environment variables at runtime — they never appear in Make output, argv
 or any file. Per-provider failures are isolated: a failure in one provider does
 not prevent the others from being provisioned.
 
+**Refresh material is set once.** `make providers` configures refresh material
+(PagerDuty OAuth client credentials, Vertex SA private key) on the first run.
+Subsequent runs skip configure if the provider is already configured, so
+rotating a PD client secret or replacing a Vertex SA key in Vault will not
+automatically push the new material to the gateway. To reconfigure:
+
+```bash
+# Remove existing refresh config, then re-run:
+openshell provider refresh remove rosa-agent-pagerduty \
+  --credential-key PAGERDUTY_ACCESS_TOKEN
+make provider PROVIDER=rosa-agent-pagerduty
+```
+
 The sections below describe the underlying manual steps that `make providers`
 automates, and remain the reference for manual intervention, rollback, or
 debugging.
