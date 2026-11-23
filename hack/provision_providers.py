@@ -568,3 +568,369 @@ def _format_cmd(argv):
         else:
             parts.append(arg)
     return " ".join(parts)
+
+
+# ---------------------------------------------------------------------------
+# Execution runner — the I/O shell
+# ---------------------------------------------------------------------------
+
+class ProvisionResult:
+    """Result of provisioning one provider."""
+
+    def __init__(self, name, success=True, error=None):
+        self.name = name
+        self.success = success
+        self.error = error
+
+    def __repr__(self):
+        status = "OK" if self.success else f"FAILED: {self.error}"
+        return f"ProvisionResult({self.name}: {status})"
+
+
+class DefaultRunner:
+    """Executes subprocesses."""
+
+    def run(self, argv, env=None, check=True):
+        merged_env = dict(os.environ)
+        if env:
+            merged_env.update(env)
+        return subprocess.run(
+            argv, env=merged_env, check=check,
+            capture_output=True, text=True,
+        )
+
+
+class DefaultVaultReader:
+    """Reads secrets from Vault via subprocess."""
+
+    def read(self, mount, path, field, json_path=None):
+        if json_path:
+            result = subprocess.run(
+                ["vault", "kv", "get", f"-mount={mount}", "-format=json", path],
+                capture_output=True, text=True, check=True,
+            )
+            data = json.loads(result.stdout)
+            val = data["data"]["data"][field]
+            for part in json_path.lstrip(".").split("."):
+                if part:
+                    val = val[part]
+            return val
+        else:
+            result = subprocess.run(
+                ["vault", "kv", "get", f"-mount={mount}", f"-field={field}", path],
+                capture_output=True, text=True, check=True,
+            )
+            return result.stdout.strip()
+
+
+def _check_exists(runner, argv, gateway):
+    """Run a get/export command; return (exists: bool, output: str)."""
+    try:
+        result = runner.run(argv, check=False)
+        if hasattr(result, "returncode"):
+            if result.returncode != 0:
+                stderr = getattr(result, "stderr", "")
+                stdout = getattr(result, "stdout", "")
+                combined = f"{stdout} {stderr}".lower()
+                if "not found" in combined:
+                    return False, ""
+                raise RuntimeError(
+                    f"Unexpected error (exit {result.returncode}): "
+                    f"{stderr or stdout}"
+                )
+            return True, getattr(result, "stdout", "")
+        return True, str(result)
+    except Exception as e:
+        if "not found" in str(e).lower():
+            return False, ""
+        raise
+
+
+def _read_gateway_token(gateway, config_dir=None):
+    """Read the cached OIDC token for OPENSHELL_TOKEN pinning."""
+    if config_dir:
+        base = config_dir
+    else:
+        base = os.environ.get(
+            "XDG_CONFIG_HOME",
+            os.path.join(os.path.expanduser("~"), ".config"),
+        )
+    token_path = os.path.join(
+        base, "openshell", "gateways", gateway, "oidc_token.json"
+    )
+    if not os.path.isfile(token_path):
+        return None
+    with open(token_path) as f:
+        data = json.load(f)
+    return data.get("access_token")
+
+
+def _resolve_env_plan(env_plan, vault, vault_reader, gateway, config_dir=None):
+    """Resolve an env_plan dict into actual env vars."""
+    env = {}
+    for var, plan in env_plan.items():
+        if plan.get("source") == "token_file":
+            token = _read_gateway_token(gateway, config_dir=config_dir)
+            if token:
+                env[var] = token
+        elif "command" in plan:
+            # Use vault_reader to resolve
+            cmd = plan["command"]
+            # Parse the vault command to extract mount/path/field
+            # This is reconstructed from the env_plan metadata
+            # For the runner, we use the vault_reader interface instead
+            pass
+    return env
+
+
+def _resolve_env_for_credentials(prov, vault, vault_reader):
+    """Resolve Vault-sourced credentials into env vars."""
+    env = {}
+    for cred in prov.get("credentials", []):
+        if cred.get("vault_field"):
+            val = vault_reader.read(
+                vault["kv_mount"], vault["kv_path"],
+                cred["vault_field"], cred.get("json_path"),
+            )
+            env[cred["key"]] = val
+    return env
+
+
+def _resolve_env_for_refresh(refresh, vault, vault_reader):
+    """Resolve Vault-sourced refresh material into env vars."""
+    env = {}
+    if not refresh:
+        return env
+    for mat in refresh.get("material", []):
+        if mat.get("vault_field") and mat.get("secret"):
+            env_var = f"_REFRESH_{mat['key'].upper()}"
+            val = vault_reader.read(
+                vault["kv_mount"], vault["kv_path"],
+                mat["vault_field"], mat.get("json_path"),
+            )
+            env[env_var] = val
+    return env
+
+
+def provision_one_provider(prov, vault, gateway, runner=None, vault_reader=None,
+                            base_dir=".", config_dir=None):
+    """Provision a single provider: profile + provider + optional refresh.
+
+    Returns a ProvisionResult.
+    """
+    if runner is None:
+        runner = DefaultRunner()
+    if vault_reader is None:
+        vault_reader = DefaultVaultReader()
+
+    name = prov["name"]
+    profile_id = prov["profile"]
+
+    try:
+        # 1. Check if profile exists
+        profile_exists, export_output = _check_exists(
+            runner,
+            ["openshell", "-g", gateway, "profile", "export", profile_id,
+             *(["--global"] if prov.get("global_profile") else [])],
+            gateway,
+        )
+
+        # 2. Build and execute profile commands
+        if profile_exists:
+            # Extract resource_version
+            rv = None
+            for line in export_output.splitlines():
+                if line.startswith("resource_version:"):
+                    rv = line.split(":", 1)[1].strip()
+                    break
+
+            if not rv:
+                raise RuntimeError(
+                    f"Could not extract resource_version from profile export"
+                )
+
+            # Create temp file with resource_version appended
+            profile_path = os.path.join(base_dir, prov["profile_file"])
+            tmp_file = None
+            try:
+                with tempfile.NamedTemporaryFile(
+                    mode="w", suffix=".yaml", delete=False
+                ) as f:
+                    tmp_file = f.name
+                    if os.path.isfile(profile_path):
+                        with open(profile_path) as src:
+                            f.write(src.read())
+                    f.write(f"resource_version: {rv}\n")
+                os.chmod(tmp_file, 0o600)
+
+                # Lint
+                runner.run([
+                    "openshell", "-g", gateway,
+                    "profile", "lint", "--file", prov["profile_file"],
+                ])
+
+                # Update
+                update_cmd = [
+                    "openshell", "-g", gateway,
+                    "profile", "update", profile_id,
+                    "--file", tmp_file,
+                ]
+                if prov.get("global_profile"):
+                    update_cmd.append("--global")
+                runner.run(update_cmd)
+            finally:
+                if tmp_file and os.path.exists(tmp_file):
+                    os.unlink(tmp_file)
+        else:
+            # Lint
+            runner.run([
+                "openshell", "-g", gateway,
+                "profile", "lint", "--file", prov["profile_file"],
+            ])
+            # Import
+            import_cmd = [
+                "openshell", "-g", gateway,
+                "profile", "import", "--file", prov["profile_file"],
+            ]
+            if prov.get("global_profile"):
+                import_cmd.append("--global")
+            runner.run(import_cmd)
+
+        # 3. Check if provider exists
+        provider_exists, _ = _check_exists(
+            runner,
+            ["openshellctl", "-g", gateway, "provider", "get", name],
+            gateway,
+        )
+
+        # 4. Resolve credentials env
+        cred_env = _resolve_env_for_credentials(prov, vault, vault_reader)
+
+        # Gateway token pinning
+        if prov.get("pin_gateway_token"):
+            token = _read_gateway_token(gateway, config_dir=config_dir)
+            if token:
+                cred_env["OPENSHELL_TOKEN"] = token
+
+        # 5. Build and execute provider commands
+        prov_argv, _ = build_provider_argv(
+            prov, vault, gateway, provider_exists=provider_exists
+        )
+        for cmd in prov_argv:
+            runner.run(cmd, env=cred_env)
+
+        # 6. Refresh configure + rotate
+        refresh = prov.get("refresh")
+        if refresh:
+            refresh_env = _resolve_env_for_refresh(refresh, vault, vault_reader)
+            refresh_result = build_refresh_argv(prov, vault, gateway)
+            if refresh_result:
+                argv_list, _, do_rotate = refresh_result
+                for cmd in argv_list:
+                    runner.run(cmd, env=refresh_env)
+
+        return ProvisionResult(name, success=True)
+
+    except Exception as e:
+        return ProvisionResult(name, success=False, error=str(e))
+
+
+def provision_all(desc, gateway, runner=None, vault_reader=None,
+                   base_dir=".", config_dir=None, only=None):
+    """Provision all (or one) provider(s). Returns a list of ProvisionResult."""
+    results = []
+    for prov in desc["providers"]:
+        if only and prov["name"] != only:
+            continue
+        result = provision_one_provider(
+            prov, desc["vault"], gateway,
+            runner=runner, vault_reader=vault_reader,
+            base_dir=base_dir, config_dir=config_dir,
+        )
+        results.append(result)
+    return results
+
+
+def format_summary(results):
+    """Print a summary and return an exit code (0 = all OK, 1 = any failed)."""
+    failed = [r for r in results if not r.success]
+    succeeded = [r for r in results if r.success]
+
+    for r in succeeded:
+        print(f"  OK: {r.name}")
+    for r in failed:
+        print(f"  FAILED: {r.name}: {r.error}")
+
+    print(f"\n{len(succeeded)}/{len(results)} providers succeeded.")
+    if failed:
+        print(f"{len(failed)} provider(s) failed:")
+        for r in failed:
+            print(f"  - {r.name}")
+        return 1
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# CLI entry point
+# ---------------------------------------------------------------------------
+
+def main(argv=None):
+    """CLI entry point for make targets."""
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description="Provision rosa-agent providers on a gateway."
+    )
+    parser.add_argument(
+        "--descriptor", default="provider-profiles/providers.yaml",
+        help="Path to providers.yaml descriptor",
+    )
+    parser.add_argument(
+        "--gateway", default="rosa-agent",
+        help="Gateway registration name",
+    )
+    parser.add_argument(
+        "--only",
+        help="Provision only this provider name",
+    )
+    parser.add_argument(
+        "--dry-run", action="store_true",
+        help="Show planned commands without executing",
+    )
+    parser.add_argument(
+        "--check", action="store_true",
+        help="Validate the descriptor and exit",
+    )
+    parser.add_argument(
+        "--base-dir", default=".",
+        help="Base directory for resolving profile_file paths",
+    )
+
+    args = parser.parse_args(argv)
+
+    desc = load_descriptor(args.descriptor)
+
+    if args.check:
+        errors = validate_descriptor(desc, base_dir=args.base_dir)
+        if errors:
+            print("Validation errors:", file=sys.stderr)
+            for e in errors:
+                print(f"  {e}", file=sys.stderr)
+            return 1
+        print("providers.yaml: OK")
+        return 0
+
+    if args.dry_run:
+        print(format_dry_run(desc, args.gateway, only=args.only))
+        return 0
+
+    results = provision_all(
+        desc, args.gateway,
+        base_dir=args.base_dir,
+        only=args.only,
+    )
+    return format_summary(results)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

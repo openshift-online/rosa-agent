@@ -600,5 +600,306 @@ class TestDryRun(unittest.TestCase):
         self.assertNotIn("rosa-agent-vertex", output)
 
 
+# ---------------------------------------------------------------------------
+# Execution runner tests — AC4
+# ---------------------------------------------------------------------------
+
+class FakeRunner:
+    """Injected fake that captures commands without executing them."""
+
+    def __init__(self, responses=None):
+        self.calls = []
+        self.responses = responses or {}
+        self._call_count = {}
+
+    def run(self, argv, env=None, check=True):
+        """Record the call and return a canned response."""
+        key = " ".join(argv[:6])
+        self._call_count[key] = self._call_count.get(key, 0) + 1
+        self.calls.append({"argv": list(argv), "env": dict(env or {})})
+
+        for pattern, resp in self.responses.items():
+            if pattern in key:
+                if isinstance(resp, Exception):
+                    if check:
+                        raise resp
+                    return type("Result", (), {
+                        "returncode": 1,
+                        "stdout": "",
+                        "stderr": str(resp),
+                    })()
+                return type("Result", (), {
+                    "returncode": 0,
+                    "stdout": resp if isinstance(resp, str) else "",
+                    "stderr": "",
+                })()
+
+        return type("Result", (), {
+            "returncode": 0,
+            "stdout": "",
+            "stderr": "",
+        })()
+
+
+class FakeVaultReader:
+    """Injected fake that returns canned Vault values."""
+
+    def __init__(self, values=None):
+        self.values = values or {}
+        self.calls = []
+
+    def read(self, mount, path, field, json_path=None):
+        self.calls.append({
+            "mount": mount, "path": path,
+            "field": field, "json_path": json_path,
+        })
+        key = f"{mount}/{path}/{field}"
+        val = self.values.get(key, f"fake-{field}")
+        if json_path and isinstance(val, dict):
+            for part in json_path.lstrip(".").split("."):
+                if part:
+                    val = val[part]
+        return val
+
+
+class TestProvisionProvider(unittest.TestCase):
+    """Test the provision_one_provider orchestration function."""
+
+    def setUp(self):
+        self.desc = _load_minimal()
+        self.vault = self.desc["vault"]
+        self.gateway = "rosa-agent"
+        self.runner = FakeRunner()
+        self.vault_reader = FakeVaultReader()
+
+    def test_create_new_provider(self):
+        """When profile and provider don't exist, uses import and create."""
+        prov = _provider_by_name(self.desc, "rosa-agent-github")
+        self.runner.responses["profile export"] = Exception("not found")
+        self.runner.responses["provider get"] = Exception("not found")
+
+        result = pp.provision_one_provider(
+            prov, self.vault, self.gateway,
+            runner=self.runner, vault_reader=self.vault_reader,
+        )
+        self.assertTrue(result.success, f"Expected success, got: {result}")
+        all_argv = [" ".join(c["argv"]) for c in self.runner.calls]
+        self.assertTrue(any("profile lint" in c for c in all_argv), f"No lint: {all_argv}")
+        self.assertTrue(any("profile import" in c for c in all_argv), f"No import: {all_argv}")
+        self.assertTrue(any("provider create" in c for c in all_argv), f"No create: {all_argv}")
+
+    def test_update_existing_provider(self):
+        """When profile and provider exist, uses update."""
+        prov = _provider_by_name(self.desc, "rosa-agent-github")
+        self.runner.responses["profile export"] = "id: github\nresource_version: 42\n"
+        self.runner.responses["provider get"] = "Name: rosa-agent-github"
+
+        result = pp.provision_one_provider(
+            prov, self.vault, self.gateway,
+            runner=self.runner, vault_reader=self.vault_reader,
+        )
+        self.assertTrue(result.success, f"Expected success, got: {result}")
+        all_argv = [" ".join(c["argv"]) for c in self.runner.calls]
+        self.assertTrue(any("profile update" in c for c in all_argv), f"No update: {all_argv}")
+        self.assertTrue(any("provider update" in c for c in all_argv), f"No update: {all_argv}")
+
+    def test_resource_version_splice(self):
+        """Profile update splices resource_version from export into temp file."""
+        prov = _provider_by_name(self.desc, "rosa-agent-github")
+        self.runner.responses["profile export"] = "id: github\nresource_version: 42\n"
+        self.runner.responses["provider get"] = "Name: rosa-agent-github"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            profile_path = os.path.join(tmp, "provider-profiles", "github.yaml")
+            os.makedirs(os.path.dirname(profile_path), exist_ok=True)
+            with open(profile_path, "w") as f:
+                f.write("id: github\ndisplay_name: GitHub\n")
+
+            result = pp.provision_one_provider(
+                prov, self.vault, self.gateway,
+                runner=self.runner, vault_reader=self.vault_reader,
+                base_dir=tmp,
+            )
+
+        self.assertTrue(result.success)
+        # Check that profile update was called (temp file was created and cleaned up)
+        update_calls = [
+            c for c in self.runner.calls
+            if "profile" in c["argv"] and "update" in c["argv"]
+        ]
+        self.assertEqual(len(update_calls), 1)
+
+    def test_temp_file_cleanup_on_success(self):
+        """Temp files are cleaned up after successful profile update."""
+        prov = _provider_by_name(self.desc, "rosa-agent-github")
+        self.runner.responses["profile export"] = "id: github\nresource_version: 7\n"
+        self.runner.responses["provider get"] = "exists"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            profile_path = os.path.join(tmp, "provider-profiles", "github.yaml")
+            os.makedirs(os.path.dirname(profile_path), exist_ok=True)
+            with open(profile_path, "w") as f:
+                f.write("id: github\n")
+
+            result = pp.provision_one_provider(
+                prov, self.vault, self.gateway,
+                runner=self.runner, vault_reader=self.vault_reader,
+                base_dir=tmp,
+            )
+
+        self.assertTrue(result.success)
+        # No temp files should remain
+        for c in self.runner.calls:
+            for arg in c["argv"]:
+                if arg.startswith("/tmp/") and arg.endswith(".yaml"):
+                    self.assertFalse(os.path.exists(arg),
+                                     f"Temp file not cleaned up: {arg}")
+
+    def test_temp_file_cleanup_on_error(self):
+        """Temp files are cleaned up even when update fails."""
+        prov = _provider_by_name(self.desc, "rosa-agent-github")
+        self.runner.responses["profile export"] = "id: github\nresource_version: 7\n"
+        self.runner.responses["profile update"] = Exception("update failed")
+        self.runner.responses["provider get"] = "exists"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            profile_path = os.path.join(tmp, "provider-profiles", "github.yaml")
+            os.makedirs(os.path.dirname(profile_path), exist_ok=True)
+            with open(profile_path, "w") as f:
+                f.write("id: github\n")
+
+            result = pp.provision_one_provider(
+                prov, self.vault, self.gateway,
+                runner=self.runner, vault_reader=self.vault_reader,
+                base_dir=tmp,
+            )
+
+        self.assertFalse(result.success)
+
+    def test_vault_sourced_credential_in_env(self):
+        """Vault-sourced credential is read and passed via env."""
+        prov = _provider_by_name(self.desc, "rosa-agent-github")
+        self.runner.responses["profile export"] = Exception("not found")
+        self.runner.responses["provider get"] = Exception("not found")
+        self.vault_reader.values["osd-sre/rosa-agent/github-token"] = "fake-token-123"
+
+        result = pp.provision_one_provider(
+            prov, self.vault, self.gateway,
+            runner=self.runner, vault_reader=self.vault_reader,
+        )
+        self.assertTrue(result.success)
+        # The provider create call should have GH_TOKEN in its env
+        create_calls = [
+            c for c in self.runner.calls
+            if "provider" in c["argv"] and "create" in c["argv"]
+        ]
+        self.assertEqual(len(create_calls), 1)
+        self.assertEqual(create_calls[0]["env"].get("GH_TOKEN"), "fake-token-123")
+
+    def test_openshell_token_pinning(self):
+        """Openshell provider reads OPENSHELL_TOKEN from token file."""
+        prov = _provider_by_name(self.desc, "rosa-agent-openshell")
+        self.runner.responses["profile export"] = Exception("not found")
+        self.runner.responses["provider get"] = Exception("not found")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            # Create fake token file
+            gw_dir = os.path.join(tmp, "openshell", "gateways", "rosa-agent")
+            os.makedirs(gw_dir)
+            with open(os.path.join(gw_dir, "oidc_token.json"), "w") as f:
+                f.write('{"access_token": "test-token-xyz"}')
+
+            profile_path = os.path.join(tmp, "base", "provider-profiles", "openshell.yaml")
+            os.makedirs(os.path.dirname(profile_path), exist_ok=True)
+            with open(profile_path, "w") as f:
+                f.write("id: openshell\n")
+
+            result = pp.provision_one_provider(
+                prov, self.vault, self.gateway,
+                runner=self.runner, vault_reader=self.vault_reader,
+                base_dir=os.path.join(tmp, "base"),
+                config_dir=tmp,
+            )
+
+        create_calls = [
+            c for c in self.runner.calls
+            if "provider" in c["argv"] and ("create" in c["argv"] or "update" in c["argv"])
+        ]
+        if create_calls:
+            self.assertEqual(create_calls[0]["env"].get("OPENSHELL_TOKEN"), "test-token-xyz")
+
+    def test_refresh_configure_and_rotate(self):
+        """Vertex provider runs configure then rotate."""
+        prov = _provider_by_name(self.desc, "rosa-agent-vertex")
+        self.runner.responses["profile export"] = Exception("not found")
+        self.runner.responses["provider get"] = Exception("not found")
+
+        result = pp.provision_one_provider(
+            prov, self.vault, self.gateway,
+            runner=self.runner, vault_reader=self.vault_reader,
+        )
+        self.assertTrue(result.success)
+        cmds = [" ".join(c["argv"][:7]) for c in self.runner.calls]
+        configure_idx = next(
+            (i for i, c in enumerate(cmds) if "configure" in c), None
+        )
+        rotate_idx = next(
+            (i for i, c in enumerate(cmds) if "rotate" in c), None
+        )
+        self.assertIsNotNone(configure_idx, f"No configure call found in: {cmds}")
+        self.assertIsNotNone(rotate_idx, f"No rotate call found in: {cmds}")
+        self.assertLess(configure_idx, rotate_idx, "configure must precede rotate")
+
+    def test_provider_failure_isolated(self):
+        """A failing provider does not prevent others from running."""
+        self.runner.responses["profile export"] = Exception("not found")
+        self.runner.responses["provider get"] = Exception("not found")
+
+        results = pp.provision_all(
+            self.desc, self.gateway,
+            runner=self.runner, vault_reader=self.vault_reader,
+        )
+        self.assertEqual(len(results), 5)
+
+    def test_only_selection(self):
+        """--only provisions a single provider."""
+        self.runner.responses["profile export"] = Exception("not found")
+        self.runner.responses["provider get"] = Exception("not found")
+
+        results = pp.provision_all(
+            self.desc, self.gateway,
+            runner=self.runner, vault_reader=self.vault_reader,
+            only="rosa-agent-github",
+        )
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0].name, "rosa-agent-github")
+
+    def test_nonzero_summary_on_failure(self):
+        """Summary returns non-zero when any provider fails."""
+        self.runner.responses["profile export"] = Exception("not found")
+        self.runner.responses["provider get"] = Exception("not found")
+        # Make github's provider create fail
+        self.runner.responses["provider create"] = Exception("create failed")
+
+        results = pp.provision_all(
+            self.desc, self.gateway,
+            runner=self.runner, vault_reader=self.vault_reader,
+        )
+        exit_code = pp.format_summary(results)
+        self.assertNotEqual(exit_code, 0)
+
+    def test_all_success_summary(self):
+        """Summary returns zero when all providers succeed."""
+        self.runner.responses["profile export"] = Exception("not found")
+        self.runner.responses["provider get"] = Exception("not found")
+
+        results = pp.provision_all(
+            self.desc, self.gateway,
+            runner=self.runner, vault_reader=self.vault_reader,
+        )
+        exit_code = pp.format_summary(results)
+        self.assertEqual(exit_code, 0)
+
+
 if __name__ == "__main__":
     unittest.main()
