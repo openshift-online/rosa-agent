@@ -457,10 +457,12 @@ def _format_cmd(argv):
 class ProvisionResult:
     """Result of provisioning one provider."""
 
-    def __init__(self, name, success=True, error=None):
+    def __init__(self, name, success=True, error=None, action=None, rotated=False):
         self.name = name
         self.success = success
         self.error = error
+        self.action = action
+        self.rotated = rotated
 
     def __repr__(self):
         status = "OK" if self.success else f"FAILED: {self.error}"
@@ -677,13 +679,20 @@ def provision_one_provider(prov, vault, gateway, runner=None, vault_reader=None,
                 cred_env["OPENSHELL_TOKEN"] = token
 
         # 5. Build and execute provider commands
+        action = "updated" if provider_exists else "created"
         prov_argv, _ = build_provider_argv(
             prov, vault, gateway, provider_exists=provider_exists
         )
         for cmd in prov_argv:
             runner.run(cmd, env=cred_env)
 
-        # 6. Refresh configure + rotate
+        # 6. Verify provider exists after create/update
+        runner.run(
+            ["openshellctl", "-g", gateway, "provider", "get", name, "-o", "json"],
+        )
+
+        # 7. Refresh configure + rotate
+        rotated = False
         refresh = prov.get("refresh")
         if refresh:
             refresh_env = _resolve_env_for_refresh(refresh, vault, vault_reader)
@@ -701,8 +710,9 @@ def provision_one_provider(prov, vault, gateway, runner=None, vault_reader=None,
                             pass
                         else:
                             raise
+                rotated = do_rotate
 
-        return ProvisionResult(name, success=True)
+        return ProvisionResult(name, success=True, action=action, rotated=rotated)
 
     except Exception as e:
         return ProvisionResult(name, success=False, error=_format_error(e))
@@ -711,6 +721,13 @@ def provision_one_provider(prov, vault, gateway, runner=None, vault_reader=None,
 def provision_all(desc, gateway, runner=None, vault_reader=None,
                    base_dir=".", config_dir=None, only=None):
     """Provision all (or one) provider(s). Returns a list of ProvisionResult."""
+    if only:
+        known = {p["name"] for p in desc["providers"]}
+        if only not in known:
+            raise ValueError(
+                f"Unknown provider '{only}'; "
+                f"known providers: {', '.join(sorted(known))}"
+            )
     results = []
     for prov in desc["providers"]:
         if only and prov["name"] != only:
@@ -730,7 +747,10 @@ def format_summary(results):
     succeeded = [r for r in results if r.success]
 
     for r in succeeded:
-        print(f"  OK: {r.name}")
+        detail = r.action or "ok"
+        if r.rotated:
+            detail += ", rotated"
+        print(f"  OK: {r.name} ({detail})")
     for r in failed:
         print(f"  FAILED: {r.name}: {r.error}")
 

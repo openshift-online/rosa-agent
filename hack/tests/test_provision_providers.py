@@ -580,6 +580,8 @@ class FakeRunner:
 
         for pattern, resp in self.responses.items():
             if pattern in key:
+                if callable(resp) and not isinstance(resp, Exception):
+                    resp = resp(argv, self._call_count[key])
                 if isinstance(resp, Exception):
                     if check:
                         raise resp
@@ -622,6 +624,13 @@ class FakeVaultReader:
         return val
 
 
+def _not_found_then_ok(argv, call_num):
+    """First call returns 'not found'; subsequent calls succeed (for verify)."""
+    if call_num == 1:
+        return Exception("resource not found")
+    return '{"status":"ok"}'
+
+
 class TestProvisionProvider(unittest.TestCase):
     """Test the provision_one_provider orchestration function."""
 
@@ -636,7 +645,7 @@ class TestProvisionProvider(unittest.TestCase):
         """When profile and provider don't exist, uses import and create."""
         prov = _provider_by_name(self.desc, "rosa-agent-github")
         self.runner.responses["profile export"] = Exception("resource not found")
-        self.runner.responses["provider get"] = Exception("resource not found")
+        self.runner.responses["provider get"] = _not_found_then_ok
 
         result = pp.provision_one_provider(
             prov, self.vault, self.gateway,
@@ -740,7 +749,7 @@ class TestProvisionProvider(unittest.TestCase):
         """Vault-sourced credential is read and passed via env."""
         prov = _provider_by_name(self.desc, "rosa-agent-github")
         self.runner.responses["profile export"] = Exception("resource not found")
-        self.runner.responses["provider get"] = Exception("resource not found")
+        self.runner.responses["provider get"] = _not_found_then_ok
         self.vault_reader.values["osd-sre/rosa-agent/github-token"] = "fake-token-123"
 
         result = pp.provision_one_provider(
@@ -760,7 +769,7 @@ class TestProvisionProvider(unittest.TestCase):
         """Openshell provider reads OPENSHELL_TOKEN from token file."""
         prov = _provider_by_name(self.desc, "rosa-agent-openshell")
         self.runner.responses["profile export"] = Exception("resource not found")
-        self.runner.responses["provider get"] = Exception("resource not found")
+        self.runner.responses["provider get"] = _not_found_then_ok
 
         with tempfile.TemporaryDirectory() as tmp:
             # Create fake token file
@@ -792,7 +801,7 @@ class TestProvisionProvider(unittest.TestCase):
         """Vertex provider runs configure then rotate."""
         prov = _provider_by_name(self.desc, "rosa-agent-vertex")
         self.runner.responses["profile export"] = Exception("resource not found")
-        self.runner.responses["provider get"] = Exception("resource not found")
+        self.runner.responses["provider get"] = _not_found_then_ok
 
         result = pp.provision_one_provider(
             prov, self.vault, self.gateway,
@@ -814,7 +823,7 @@ class TestProvisionProvider(unittest.TestCase):
         """Second refresh configure succeeds even if CLI says 'already configured'."""
         prov = _provider_by_name(self.desc, "rosa-agent-pagerduty")
         self.runner.responses["profile export"] = Exception("resource not found")
-        self.runner.responses["provider get"] = Exception("resource not found")
+        self.runner.responses["provider get"] = _not_found_then_ok
         self.runner.responses["refresh configure"] = Exception(
             "already configured for credential key PAGERDUTY_ACCESS_TOKEN"
         )
@@ -830,7 +839,7 @@ class TestProvisionProvider(unittest.TestCase):
         """Non-secret vault-sourced refresh material is resolved into argv."""
         prov = _provider_by_name(self.desc, "rosa-agent-pagerduty")
         self.runner.responses["profile export"] = Exception("resource not found")
-        self.runner.responses["provider get"] = Exception("resource not found")
+        self.runner.responses["provider get"] = _not_found_then_ok
 
         result = pp.provision_one_provider(
             prov, self.vault, self.gateway,
@@ -849,7 +858,7 @@ class TestProvisionProvider(unittest.TestCase):
     def test_provider_failure_isolated(self):
         """A failing provider does not prevent others from running."""
         self.runner.responses["profile export"] = Exception("resource not found")
-        self.runner.responses["provider get"] = Exception("resource not found")
+        self.runner.responses["provider get"] = _not_found_then_ok
 
         results = pp.provision_all(
             self.desc, self.gateway,
@@ -860,7 +869,7 @@ class TestProvisionProvider(unittest.TestCase):
     def test_only_selection(self):
         """--only provisions a single provider."""
         self.runner.responses["profile export"] = Exception("resource not found")
-        self.runner.responses["provider get"] = Exception("resource not found")
+        self.runner.responses["provider get"] = _not_found_then_ok
 
         results = pp.provision_all(
             self.desc, self.gateway,
@@ -873,7 +882,7 @@ class TestProvisionProvider(unittest.TestCase):
     def test_nonzero_summary_on_failure(self):
         """Summary returns non-zero when any provider fails."""
         self.runner.responses["profile export"] = Exception("resource not found")
-        self.runner.responses["provider get"] = Exception("resource not found")
+        self.runner.responses["provider get"] = _not_found_then_ok
         # Make github's provider create fail
         self.runner.responses["provider create"] = Exception("create failed")
 
@@ -887,7 +896,7 @@ class TestProvisionProvider(unittest.TestCase):
     def test_all_success_summary(self):
         """Summary returns zero when all providers succeed."""
         self.runner.responses["profile export"] = Exception("resource not found")
-        self.runner.responses["provider get"] = Exception("resource not found")
+        self.runner.responses["provider get"] = _not_found_then_ok
 
         results = pp.provision_all(
             self.desc, self.gateway,
@@ -902,6 +911,92 @@ class TestProvisionProvider(unittest.TestCase):
         err.stderr = "dial: connection refused"
         formatted = pp._format_error(err)
         self.assertIn("connection refused", formatted)
+
+    def test_unknown_only_raises(self):
+        """--only with an unknown provider name raises ValueError."""
+        with self.assertRaises(ValueError) as ctx:
+            pp.provision_all(
+                self.desc, self.gateway,
+                runner=self.runner, vault_reader=self.vault_reader,
+                only="rosa-agent-nonexistent",
+            )
+        self.assertIn("rosa-agent-nonexistent", str(ctx.exception))
+
+    def test_verify_after_create(self):
+        """After provider create, a 'provider get' verify call is made."""
+        self.runner.responses["profile export"] = Exception("resource not found")
+        self.runner.responses["provider get"] = _not_found_then_ok
+
+        result = pp.provision_one_provider(
+            self.desc["providers"][1],  # github
+            self.vault, self.gateway,
+            runner=self.runner, vault_reader=self.vault_reader,
+        )
+        self.assertTrue(result.success)
+        verify_calls = [
+            c for c in self.runner.calls
+            if "provider" in " ".join(c["argv"])
+            and "get" in c["argv"]
+            and "-o" in c["argv"]
+        ]
+        self.assertEqual(len(verify_calls), 1)
+        self.assertIn("json", " ".join(verify_calls[0]["argv"]))
+
+    def test_result_reports_created(self):
+        """ProvisionResult reports 'created' when provider was new."""
+        self.runner.responses["profile export"] = Exception("resource not found")
+        self.runner.responses["provider get"] = _not_found_then_ok
+
+        result = pp.provision_one_provider(
+            self.desc["providers"][1],  # github
+            self.vault, self.gateway,
+            runner=self.runner, vault_reader=self.vault_reader,
+        )
+        self.assertTrue(result.success)
+        self.assertEqual(result.action, "created")
+
+    def test_result_reports_updated(self):
+        """ProvisionResult reports 'updated' when provider already existed."""
+        export_out = "resource_version: abc123\nid: github\n"
+        self.runner.responses["profile export"] = export_out
+        self.runner.responses["provider get"] = '{"name":"rosa-agent-github"}'
+
+        result = pp.provision_one_provider(
+            self.desc["providers"][1],  # github
+            self.vault, self.gateway,
+            runner=self.runner, vault_reader=self.vault_reader,
+        )
+        self.assertTrue(result.success)
+        self.assertEqual(result.action, "updated")
+
+    def test_result_reports_rotated(self):
+        """ProvisionResult reports rotated=True when rotate ran."""
+        self.runner.responses["profile export"] = Exception("resource not found")
+        self.runner.responses["provider get"] = _not_found_then_ok
+
+        # PagerDuty provider (index 3) has rotate_after_configure
+        result = pp.provision_one_provider(
+            self.desc["providers"][3],  # pagerduty
+            self.vault, self.gateway,
+            runner=self.runner, vault_reader=self.vault_reader,
+        )
+        self.assertTrue(result.success)
+        self.assertTrue(result.rotated)
+
+    def test_summary_shows_action(self):
+        """Summary output includes created/updated action."""
+        results = [
+            pp.ProvisionResult("rosa-agent-github", success=True, action="created"),
+            pp.ProvisionResult("rosa-agent-jira", success=True, action="updated"),
+        ]
+        import io
+        from contextlib import redirect_stdout
+        f = io.StringIO()
+        with redirect_stdout(f):
+            pp.format_summary(results)
+        output = f.getvalue()
+        self.assertIn("created", output)
+        self.assertIn("updated", output)
 
 
 if __name__ == "__main__":
