@@ -11,7 +11,7 @@ SANDBOX_TAG ?= $(shell git rev-parse --short=7 HEAD)
 SANDBOX_CONTAINERFILE := Containerfile
 SANDBOX_CONTEXT := .
 
-.PHONY: lint markdown-lint check-placeholders lint-sandbox check-hypershell generate-hypershell test test-hack test-e2e-nested-sandbox sandbox-build sandbox-push require-sandbox-image openshell-provider openshell-profile openshell-provider-only openshell-gateway openshell-vault-login
+.PHONY: lint markdown-lint check-placeholders lint-sandbox check-hypershell check-providers generate-hypershell test test-hack test-e2e-nested-sandbox sandbox-build sandbox-push require-sandbox-image providers provider providers-dry-run openshell-provider openshell-profile openshell-provider-only openshell-gateway openshell-vault-login
 
 # Parent lint target: runs every linter. The OpenShift CI `ci/prow/lint`
 # presubmit runs `make lint`. Add new linters (shell, yaml, ...) as their own
@@ -23,7 +23,7 @@ SANDBOX_CONTEXT := .
 #   ci-operator/config/openshift-online/rosa-agent/
 #     openshift-online-rosa-agent-main.yaml
 # Adding a tool this target depends on means editing that file too.
-lint: markdown-lint check-placeholders lint-sandbox check-hypershell
+lint: markdown-lint check-placeholders lint-sandbox check-hypershell check-providers
 
 # Validate the .hypershell/ Kustomize tree: every build root renders, every
 # rendered resource is an importable Kind with a metadata.name, and each
@@ -117,32 +117,54 @@ sandbox-push: require-sandbox-image sandbox-build
 	@echo "Pushed $(SANDBOX_IMAGE):$(SANDBOX_TAG)"
 
 # ---------------------------------------------------------------------------
-# OpenShell provider provisioning
+# Provider provisioning — data-driven from provider-profiles/providers.yaml
 #
-# Vault-driven, idempotent Make targets that put the openshell provider profile
-# and provider on the gateway. Requires: VAULT_ADDR, and either a valid
-# ~/.vault-token or the three OPENSHELL_VAULT_* exports below. Two CLIs are
-# needed because openshellctl has no profile import/update (stubs), and the
-# Rust openshell has no Vault integration. openshellctl bridges them by writing
-# a token file that the Rust CLI reads (token refresh --write).
+# `make providers` provisions all five rosa-agent providers on the gateway
+# idempotently: profile lint + import-or-update, provider create-or-update,
+# and optional refresh configure + rotate. Vault-sourced secrets are read at
+# runtime into environment variables and never appear in Make output or argv.
 #
-# Required exports (defaults shown):
-#   VAULT_ADDR                         (no default — must be set)
-#   OPENSHELL_VAULT_KV_MOUNT ?= osd-sre
-#   OPENSHELL_VAULT_KV_PATH  ?= rosa-agent
-#   OPENSHELL_VAULT_FIELD_PREFIX ?= hypershell
+# Required: VAULT_ADDR, a valid Vault session, and both `openshell` (Rust CLI)
+# and `openshellctl` (Go CLI) on PATH.
 # ---------------------------------------------------------------------------
 
 OPENSHELL_GATEWAY_NAME    ?= rosa-agent
-OPENSHELL_PROFILE_ID      := openshell
-OPENSHELL_PROVIDER        := rosa-agent-openshell
+PROVIDERS_DESCRIPTOR      := provider-profiles/providers.yaml
 OPENSHELL_VAULT_KV_MOUNT  ?= osd-sre
 OPENSHELL_VAULT_KV_PATH   ?= rosa-agent
 OPENSHELL_VAULT_FIELD_PREFIX ?= hypershell
-VAULT_SECRET_FIELD        := hypershell-oidc-client-secret
 
-# Convenience alias: run all provisioning steps in order.
-openshell-provider: openshell-profile openshell-provider-only
+# Provision all five providers.
+providers:
+	python3 hack/provision_providers.py \
+		--descriptor $(PROVIDERS_DESCRIPTOR) \
+		--gateway $(OPENSHELL_GATEWAY_NAME)
+
+# Provision a single provider by name (e.g. PROVIDER=rosa-agent-github).
+provider:
+	@test -n "$(PROVIDER)" || { echo "ERROR: PROVIDER is not set."; echo "Usage: make provider PROVIDER=rosa-agent-github"; exit 1; }
+	python3 hack/provision_providers.py \
+		--descriptor $(PROVIDERS_DESCRIPTOR) \
+		--gateway $(OPENSHELL_GATEWAY_NAME) \
+		--only $(PROVIDER)
+
+# Show planned commands without executing.
+providers-dry-run:
+	python3 hack/provision_providers.py \
+		--descriptor $(PROVIDERS_DESCRIPTOR) \
+		--gateway $(OPENSHELL_GATEWAY_NAME) \
+		--dry-run
+
+# Validate the providers.yaml descriptor (wired into make lint).
+check-providers:
+	python3 hack/provision_providers.py \
+		--descriptor $(PROVIDERS_DESCRIPTOR) \
+		--check
+
+# Deprecated alias. Use `make providers` or `make provider PROVIDER=rosa-agent-openshell`.
+openshell-provider:
+	@echo "WARNING: 'make openshell-provider' is deprecated. Use 'make providers' or 'make provider PROVIDER=rosa-agent-openshell'." >&2
+	$(MAKE) provider PROVIDER=rosa-agent-openshell
 
 # Log in to Vault if no valid token exists. Does nothing if a valid token is
 # already cached in ~/.vault-token or VAULT_TOKEN.
@@ -185,11 +207,11 @@ openshell-profile: openshell-gateway
 openshell-provider-only: openshell-gateway
 	env OPENSHELL_TOKEN="$$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["access_token"])' \
 	      "$${XDG_CONFIG_HOME:-$$HOME/.config}/openshell/gateways/$(OPENSHELL_GATEWAY_NAME)/oidc_token.json")" \
-	    OPENSHELL_OIDC_CLIENT_SECRET="$$(vault kv get -mount=$(OPENSHELL_VAULT_KV_MOUNT) -field=$(VAULT_SECRET_FIELD) $(OPENSHELL_VAULT_KV_PATH))" \
+	    OPENSHELL_OIDC_CLIENT_SECRET="$$(vault kv get -mount=$(OPENSHELL_VAULT_KV_MOUNT) -field=hypershell-oidc-client-secret $(OPENSHELL_VAULT_KV_PATH))" \
 	  hack/openshell_provider_apply.sh \
 	    $(OPENSHELL_GATEWAY_NAME) \
-	    $(OPENSHELL_PROVIDER) \
-	    $(OPENSHELL_PROFILE_ID) \
+	    rosa-agent-openshell \
+	    openshell \
 	    OPENSHELL_OIDC_CLIENT_SECRET
 
 # ---------------------------------------------------------------------------
