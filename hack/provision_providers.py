@@ -649,6 +649,17 @@ def provision_one_provider(prov, vault, gateway, runner=None, vault_reader=None,
     name = prov["name"]
 
     try:
+        # 0. Fail fast if pin_gateway_token is set but the token file is missing.
+        cred_env_token = {}
+        if prov.get("pin_gateway_token"):
+            token = _read_gateway_token(gateway, config_dir=config_dir)
+            if not token:
+                raise RuntimeError(
+                    "pin_gateway_token is set but no OIDC token file found; "
+                    "run 'make openshell-gateway' first"
+                )
+            cred_env_token["OPENSHELL_TOKEN"] = token
+
         # 1. Check if profile exists
         profile_exists, export_output = _check_exists(
             runner,
@@ -687,15 +698,7 @@ def provision_one_provider(prov, vault, gateway, runner=None, vault_reader=None,
 
         # 4. Resolve credentials env
         cred_env = _resolve_env_for_credentials(prov, vault, vault_reader)
-
-        if prov.get("pin_gateway_token"):
-            token = _read_gateway_token(gateway, config_dir=config_dir)
-            if not token:
-                raise RuntimeError(
-                    "pin_gateway_token is set but no OIDC token file found; "
-                    "run 'make openshell-gateway' first"
-                )
-            cred_env["OPENSHELL_TOKEN"] = token
+        cred_env.update(cred_env_token)
 
         # 5. Build and execute provider commands
         action = "updated" if provider_exists else "created"

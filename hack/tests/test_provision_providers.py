@@ -817,10 +817,8 @@ class TestProvisionProvider(unittest.TestCase):
         self.assertEqual(create_calls[0]["env"].get("OPENSHELL_TOKEN"), "test-token-xyz")
 
     def test_pin_gateway_token_missing_fails(self):
-        """pin_gateway_token with missing token file fails the provider."""
+        """pin_gateway_token with missing token file fails before profile work."""
         prov = _provider_by_name(self.desc, "rosa-agent-openshell")
-        self.runner.responses["profile export"] = Exception("provider profile 'unknown' not found")
-        self.runner.responses["provider get"] = _not_found_then_ok
 
         with tempfile.TemporaryDirectory() as tmp:
             # No token file created — config_dir points to empty dir
@@ -838,6 +836,7 @@ class TestProvisionProvider(unittest.TestCase):
 
         self.assertFalse(result.success)
         self.assertIn("openshell-gateway", result.error)
+        self.assertEqual(self.runner.calls, [], "no CLI calls before token check")
 
     def test_refresh_configure_and_rotate(self):
         """Vertex provider runs configure then rotate."""

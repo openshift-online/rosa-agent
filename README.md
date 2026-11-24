@@ -404,8 +404,9 @@ values at sandbox create time (same pattern as `JIRA_EMAIL`/`JIRA_BASE_URL`):
 
 ### Provisioning
 
-Use the data-driven provisioning target to provision this provider along with
-all others, or provision it individually:
+Requires `VAULT_ADDR` and a valid Vault session. Use the data-driven
+provisioning target to provision this provider along with all others, or
+provision it individually:
 
 ```bash
 make providers                                    # all five providers
