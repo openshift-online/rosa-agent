@@ -19,6 +19,7 @@ vault:
   kv_path: rosa-agent
 
 providers:
+  # openshell must be first: pin_gateway_token uses the ~5 min OIDC token from openshell-gateway.
   - name: rosa-agent-openshell
     profile: openshell
     profile_file: provider-profiles/openshell.yaml
