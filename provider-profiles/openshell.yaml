@@ -29,8 +29,10 @@
 #   child sandboxes inherit the baked policy. A lower-privilege SA is tracked
 #   as a follow-up.
 #
-# Import and provision (Vault-sourced, idempotent):
-#   make openshell-provider
+# Provisioning (data-driven, idempotent):
+#   make providers                            # all five providers
+#   make provider PROVIDER=rosa-agent-openshell  # just this one
+#   make providers-dry-run                    # preview commands
 #
 # Manual lint and import:
 #   openshell -g <gateway> profile lint   --file provider-profiles/openshell.yaml

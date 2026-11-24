@@ -32,7 +32,12 @@
 #   itself. Widen it only for a real, specific need — never with a
 #   catch-all POST/PUT/PATCH, since that's where real damage is possible.
 #
-# Import:
+# Provisioning (data-driven, idempotent):
+#   make providers                                # all five providers
+#   make provider PROVIDER=rosa-agent-pagerduty   # just this one
+#   make providers-dry-run                        # preview commands
+#
+# Manual import:
 #   Edit the `scopes` list near the bottom FIRST - replace
 #   `as_account-us.CHANGEME` with your actual `as_account-<region>.<subdomain>`
 #   (see step 4 below for details). `lint` only checks schema shape, not

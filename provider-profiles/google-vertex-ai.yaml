@@ -20,13 +20,18 @@
 #      substituted into the body; a sentinel is an opaque placeholder and
 #      forwarding it as text leaks nothing.
 #
-# Import (one-time per new gateway; lint first to catch format issues):
+# Provisioning (data-driven, idempotent):
+#   make providers                            # all five providers
+#   make provider PROVIDER=rosa-agent-vertex  # just this one
+#   make providers-dry-run                    # preview commands
+#
+# Manual import (one-time per new gateway; lint first to catch format issues):
 #   openshell -g <gateway> profile lint   --file provider-profiles/google-vertex-ai.yaml
 #   openshell -g <gateway> profile import --file provider-profiles/google-vertex-ai.yaml --global
 # To update an existing gateway's profile: export, edit, then
 #   openshell -g <gateway> profile update (requires fresh resource_version).
 #
-# Create provider (SA key for production):
+# Manual provider create (SA key for production):
 #   openshell -g <gateway> provider create --name rosa-agent-vertex \
 #     --type google-vertex-ai --global-profile \
 #     --credential GOOGLE_VERTEX_AI_SERVICE_ACCOUNT_TOKEN=placeholder \

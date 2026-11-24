@@ -114,6 +114,9 @@ openshell provider profile lint -f provider-profiles/<profile>.yaml
 openshell provider profile import -f provider-profiles/<profile>.yaml
 ```
 
+All providers are provisioned from a single descriptor (`hack/providers.yaml`) via
+`make providers`. See `docs/hypershell-providers.md` for the manual runbook.
+
 Currently there are four profiles:
 
 * **`google-vertex-ai.yaml`** — Google Vertex AI inference for Claude Code. Based on the stock
@@ -146,9 +149,29 @@ Currently there are four profiles:
     why the read/write split is enforced entirely by this profile's allow-list rather than by
     PagerDuty itself.
 
-* **`openshell.yaml`** — Self-service sandbox creation for sandboxed agents. See the
-    [OpenShell (self-service sandboxes)](#openshell-self-service-sandboxes) section below for the
-    full scope, blast radius, and provisioning steps.
+* **`openshell.yaml`** — Self-service sandbox creation for sandboxed agents. Lets a sandboxed agent
+    mint its own gateway token via OIDC `client_credentials` and create child sandboxes. The OIDC
+    client secret is bound only to the Keycloak token endpoint; the gateway control-plane is L4
+    (gRPC requires ALPN h2). Authorization is enforced server-side by the service account's role.
+
+### Data-driven provider provisioning
+
+All five credentialed providers are described in `hack/providers.yaml` — a single
+descriptor with Vault field coordinates, credential shapes, and refresh strategies. Provisioning is
+a one-command operation:
+
+```bash
+# Prerequisites: VAULT_ADDR set, valid Vault session, openshell + openshellctl on PATH
+make providers              # provision all five providers
+make provider PROVIDER=rosa-agent-github  # provision one
+make providers-dry-run      # preview commands without executing
+make check-providers        # validate the descriptor (also wired into make lint)
+```
+
+The Python driver (`hack/provision_providers.py`) handles: profile lint + import-or-update with
+`resource_version` splicing, provider create-or-update, refresh configure + rotate for OAuth and
+SA-JWT providers, and per-provider failure isolation. Secrets are read from Vault into environment
+variables at runtime and never appear in argv or Make output.
 
 ### HyperShell Service Account
 
@@ -211,13 +234,9 @@ openshellctl sandbox create \
 * Fine-grainted tokens are preferred and need only `contents:read`, `issues:read&write` and `pull_request:read&write` but require approval by the ORG owners, and must be created in that org
 * Classic PAT tokens work out-of the box with `repo` permissions (top-level check-box).  We're using this as a workaround until a fine-grained token is approved
   
-Hypershell Provider config:
-
-```bash
-openshell provider create --name rosa-agent-github \
-  --type github \
-  --credential GITHUB_TOKEN
-```
+Provisioned via `make providers` or `make provider PROVIDER=rosa-agent-github`.
+See `hack/providers.yaml` for the Vault field coordinates and
+`docs/hypershell-providers.md` for the manual runbook.
 
 ## Jira
 
@@ -240,9 +259,18 @@ Hypershell Provider config:
 export JIRA_API_TOKEN=$(vault kv get -mount=osd-sre -field="jira-token" rosa-agent)
 openshell provider create --name "rosa-agent-jira" \
   --type atlassian-jira \
-  --credential JIRA_API_TOKEN \
-  --config JIRA_EMAI="sd-sre-platform+rosa-agent@redhat.com" \
-  --config JIRA_BASE_URL="https://redhat.atlassian.net"
+  --credential JIRA_API_TOKEN
+```
+
+`JIRA_EMAIL` and `JIRA_BASE_URL` are not secrets and are not handled by
+`--config` (custom profiles have no mechanism to expose `--config` values as
+sandbox env vars). Pass them as `--env` at sandbox creation time:
+
+```bash
+openshell sandbox create --provider rosa-agent-jira \
+    --env JIRA_EMAIL=sd-sre-platform+rosa-agent@redhat.com \
+    --env JIRA_BASE_URL=https://redhat.atlassian.net \
+    -- claude
 ```
 
 Note: The `atlassian-jira` Provider Profile is a custom profile, defined in this repo at
@@ -291,7 +319,10 @@ refreshes itself and sends as a plain `Authorization: Bearer <token>`.
 Hypershell Provider config:
 
 ```bash
-openshell provider create --name "rosa-agent-pagerduty" --type pagerduty
+# The placeholder credential is required at create time — the gateway needs
+# a credential entry to attach the refresh strategy to.
+openshell provider create --name "rosa-agent-pagerduty" --type pagerduty \
+  --credential PAGERDUTY_ACCESS_TOKEN=placeholder
 
 # Register (or reuse) a Scoped OAuth app in PagerDuty first (Developer Mode /
 # App Registration, with Incidents read+write access) to get these values:
@@ -301,8 +332,11 @@ openshell provider refresh configure rosa-agent-pagerduty \
   --credential-key PAGERDUTY_ACCESS_TOKEN \
   --strategy oauth2-client-credentials \
   --material client_id="$PD_CLIENT_ID" \
-  --material client_secret="$PD_CLIENT_SECRET" \
-  --secret-material-key client_secret
+  --secret-material-env client_secret=PD_CLIENT_SECRET
+
+# Rotate immediately so the placeholder is replaced with a real token.
+openshell provider refresh rotate rosa-agent-pagerduty \
+  --credential-key PAGERDUTY_ACCESS_TOKEN
 ```
 
 Note: The `pagerduty` Provider Profile is a custom profile, defined in this repo at
@@ -368,16 +402,15 @@ values at sandbox create time (same pattern as `JIRA_EMAIL`/`JIRA_BASE_URL`):
 | `OPENSHELL_OIDC_CLIENT_ID` | `hs-sa-3L1eUHbsHIb3IC4dPUGBKvCCyZJ-3L1ectgVPHVUh1EFS7NvLC43FB9` |
 | `OPENSHELL_OIDC_AUDIENCE` | `rosa-agent-3L1eUHbsHIb3IC4dPUGBKvCCyZJ` |
 
-### Provisioning (Vault-driven, idempotent)
+### Provisioning
 
-Requires `VAULT_ADDR` and a valid Vault session. Defaults: `osd-sre/rosa-agent`, prefix `hypershell`.
+Requires `VAULT_ADDR` and a valid Vault session. Use the data-driven
+provisioning target to provision this provider along with all others, or
+provision it individually:
 
 ```bash
-export OPENSHELL_VAULT_KV_MOUNT=osd-sre
-export OPENSHELL_VAULT_KV_PATH=rosa-agent
-export OPENSHELL_VAULT_FIELD_PREFIX=hypershell
-
-make openshell-provider
+make providers                                    # all five providers
+make provider PROVIDER=rosa-agent-openshell       # just this one
 ```
 
 This lints the profile, import-or-updates it on the gateway, and create-or-updates the provider.
