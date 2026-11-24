@@ -117,7 +117,7 @@ sandbox-push: require-sandbox-image sandbox-build
 	@echo "Pushed $(SANDBOX_IMAGE):$(SANDBOX_TAG)"
 
 # ---------------------------------------------------------------------------
-# Provider provisioning — data-driven from provider-profiles/providers.yaml
+# Provider provisioning — data-driven from hack/providers.yaml
 #
 # `make providers` provisions all five rosa-agent providers on the gateway
 # idempotently: profile lint + import-or-update, provider create-or-update,
@@ -137,7 +137,7 @@ sandbox-push: require-sandbox-image sandbox-build
 # ---------------------------------------------------------------------------
 
 OPENSHELL_GATEWAY_NAME    ?= rosa-agent
-PROVIDERS_DESCRIPTOR      := provider-profiles/providers.yaml
+PROVIDERS_DESCRIPTOR      := hack/providers.yaml
 OPENSHELL_VAULT_KV_MOUNT  ?= osd-sre
 OPENSHELL_VAULT_KV_PATH   ?= rosa-agent
 OPENSHELL_VAULT_FIELD_PREFIX ?= hypershell

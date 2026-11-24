@@ -15,7 +15,7 @@ the source of truth and these commands put it on a gateway.
 ## Data-driven provisioning (all providers)
 
 `make providers` provisions all five credentialed providers idempotently from
-`provider-profiles/providers.yaml`. It reads credentials from Vault, handles
+`hack/providers.yaml`. It reads credentials from Vault, handles
 profile lint + import-or-update, provider create-or-update, and refresh
 configure + rotate for providers that need it (Vertex SA-JWT, PagerDuty
 OAuth). Prerequisites:

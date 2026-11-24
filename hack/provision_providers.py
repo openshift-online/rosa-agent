@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Data-driven provider provisioning for rosa-agent gateways.
 
-Reads provider-profiles/providers.yaml, validates it, builds openshell/
+Reads hack/providers.yaml, validates it, builds openshell/
 openshellctl argv sequences, and executes them idempotently. Secrets are
 passed via environment variables and never appear in argv or log output.
 
@@ -816,7 +816,7 @@ def main(argv=None):
         description="Provision rosa-agent providers on a gateway."
     )
     parser.add_argument(
-        "--descriptor", default="provider-profiles/providers.yaml",
+        "--descriptor", default="hack/providers.yaml",
         help="Path to providers.yaml descriptor",
     )
     parser.add_argument(

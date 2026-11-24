@@ -114,7 +114,7 @@ openshell provider profile lint -f provider-profiles/<profile>.yaml
 openshell provider profile import -f provider-profiles/<profile>.yaml
 ```
 
-All providers are provisioned from a single descriptor (`provider-profiles/providers.yaml`) via
+All providers are provisioned from a single descriptor (`hack/providers.yaml`) via
 `make providers`. See `docs/hypershell-providers.md` for the manual runbook.
 
 Currently there are four profiles:
@@ -156,7 +156,7 @@ Currently there are four profiles:
 
 ### Data-driven provider provisioning
 
-All five credentialed providers are described in `provider-profiles/providers.yaml` — a single
+All five credentialed providers are described in `hack/providers.yaml` — a single
 descriptor with Vault field coordinates, credential shapes, and refresh strategies. Provisioning is
 a one-command operation:
 
@@ -235,7 +235,7 @@ openshellctl sandbox create \
 * Classic PAT tokens work out-of the box with `repo` permissions (top-level check-box).  We're using this as a workaround until a fine-grained token is approved
   
 Provisioned via `make providers` or `make provider PROVIDER=rosa-agent-github`.
-See `provider-profiles/providers.yaml` for the Vault field coordinates and
+See `hack/providers.yaml` for the Vault field coordinates and
 `docs/hypershell-providers.md` for the manual runbook.
 
 ## Jira
